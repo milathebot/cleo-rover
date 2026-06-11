@@ -12,6 +12,8 @@ This repo runs in `sim` mode now:
 - drive commands with automatic timeout safety
 - stop command
 - expression state for the 2-inch screen
+- PNG expression renderer for the Waveshare 2-inch screen
+- PC-side operator CLI
 - camera/speaker/mic placeholders
 - smoke tests
 
@@ -29,6 +31,21 @@ Smoke test in another terminal:
 
 ```bash
 python scripts/smoke_test.py
+```
+
+Render screen-expression previews:
+
+```bash
+python scripts/render_expressions.py
+```
+
+Use the operator CLI:
+
+```bash
+cleo-rover status
+cleo-rover expression thinking --text booting
+cleo-rover drive --linear 0.2 --duration-ms 250
+cleo-rover stop
 ```
 
 ## API

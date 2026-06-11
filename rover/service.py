@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
 from .drivers import RoverBody
 from .models import DriveCommand, ExpressionCommand, RoverStatus, TurretCommand
+from .renderer import render_expression
 
 ROVER_MODE = os.getenv("CLEO_ROVER_MODE", "sim")
 body = RoverBody(mode=ROVER_MODE)
@@ -49,6 +50,12 @@ async def stop() -> dict:
 async def expression(command: ExpressionCommand) -> dict:
     await body.set_expression(command)
     return {"ok": True, "expression": command.model_dump()}
+
+
+@app.get("/expression/preview.png")
+def expression_preview() -> Response:
+    frame = render_expression(body.state.expression)
+    return Response(content=frame.png_bytes(), media_type="image/png")
 
 
 @app.post("/turret")
