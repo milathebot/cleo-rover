@@ -1,0 +1,56 @@
+{
+  "name": "cleo-rover-mk1",
+  "profile": "bench-sim",
+  "display": {
+    "type": "waveshare-st7789",
+    "width": 240,
+    "height": 320,
+    "rotation": 180,
+    "spi_bus": 0,
+    "spi_device": 0,
+    "dc_pin": 25,
+    "reset_pin": 27,
+    "backlight_pin": 18
+  },
+  "motors": {
+    "driver": "tb6612fng",
+    "left_pwm_pin": 12,
+    "left_in1_pin": 5,
+    "left_in2_pin": 6,
+    "right_pwm_pin": 13,
+    "right_in1_pin": 20,
+    "right_in2_pin": 21,
+    "pwm_frequency_hz": 1000,
+    "max_duty_cycle": 0.55,
+    "invert_left": false,
+    "invert_right": false
+  },
+  "turret": {
+    "driver": "pca9685",
+    "i2c_address": "0x40",
+    "pan_channel": 0,
+    "tilt_channel": 1,
+    "pan_min_deg": -70,
+    "pan_max_deg": 70,
+    "tilt_min_deg": -35,
+    "tilt_max_deg": 45
+  },
+  "sensors": {
+    "front_tof": "vl53l1x",
+    "imu": "bno055_or_mpu6050",
+    "bumper_left_pin": 16,
+    "bumper_right_pin": 26,
+    "battery_monitor": "power-bank-unknown"
+  },
+  "safety": {
+    "max_drive_duration_ms": 2000,
+    "default_drive_duration_ms": 250,
+    "heartbeat_timeout_ms": 1500,
+    "front_stop_distance_cm": 18,
+    "bench_safe_no_motors": true
+  },
+  "audio": {
+    "mic": "usb",
+    "speaker_amp": "max98357a-i2s"
+  }
+}

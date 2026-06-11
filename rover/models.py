@@ -33,6 +33,8 @@ class ExpressionCommand(BaseModel):
 
 class RoverStatus(BaseModel):
     mode: str
+    name: str = "cleo-rover-mk1"
+    profile: str = "bench-sim"
     online: bool
     stopped: bool
     expression: ExpressionCommand
@@ -43,3 +45,7 @@ class RoverStatus(BaseModel):
     camera_ready: bool = False
     mic_ready: bool = False
     speaker_ready: bool = False
+    display_ready: bool = False
+    motors_armed: bool = False
+    hardware_ready: bool = False
+    safety: dict = Field(default_factory=dict)

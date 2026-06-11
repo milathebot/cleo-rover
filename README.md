@@ -15,6 +15,8 @@ This repo runs in `sim` mode now:
 - PNG expression renderer for the Waveshare 2-inch screen
 - PC-side operator CLI
 - camera/speaker/mic placeholders
+- config-driven hardware map and safety limits
+- `/config` endpoint for pin/driver readiness
 - smoke tests
 
 ## Run locally
@@ -59,12 +61,48 @@ cleo-rover stop
 ```text
 GET  /health
 GET  /status
+GET  /config
 POST /drive
 POST /stop
 POST /expression
 POST /turret
 GET  /sensors
 ```
+
+## Hardware config
+
+Default hardware assumptions live in:
+
+```text
+config/rover.default.json
+```
+
+Override them without editing code:
+
+```bash
+CLEO_ROVER_CONFIG=/path/to/rover.local.json uvicorn rover.service:app --host 0.0.0.0 --port 8099
+```
+
+The default profile is bench-safe:
+
+- `bench_safe_no_motors: true`
+- motors report unarmed
+- drive commands still exercise the API and timeout logic
+- `/sensors` exposes the display, motor, turret, and safety map
+
+## Arrival-day checklist
+
+When parts arrive:
+
+1. Photograph all labels, boards, included cables, and motor-driver markings.
+2. Confirm the power bank has enough outputs/current for Pi + motor/servo rail.
+3. Boot Pi OS Lite, enable SSH, SPI, I2C, and camera.
+4. Run `scripts/pi_setup.sh` on the Pi.
+5. Start in sim/bench-safe mode first. Do not arm motors yet.
+6. Test `/health`, `/status`, `/config`, and `/expression/preview.png`.
+7. Wire and test the display alone.
+8. Wire and test one motor side with wheels lifted.
+9. Only then enable motor arming in a local config.
 
 ## Hardware mode later
 

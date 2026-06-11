@@ -5,13 +5,15 @@ import os
 from fastapi import FastAPI, Response
 from fastapi.responses import HTMLResponse
 
+from .config import load_config
 from .drivers import RoverBody
 from .models import DriveCommand, ExpressionCommand, RoverStatus, TurretCommand
 from .renderer import render_expression
 from .ui import operator_panel_html
 
 ROVER_MODE = os.getenv("CLEO_ROVER_MODE", "sim")
-body = RoverBody(mode=ROVER_MODE)
+CONFIG = load_config()
+body = RoverBody(mode=ROVER_MODE, config=CONFIG)
 
 app = FastAPI(title="Cleo Rover Mk1 Body Service", version="0.1.0")
 
@@ -23,22 +25,34 @@ def operator_panel() -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "mode": body.mode, "name": "cleo-rover-mk1"}
+    return {"ok": True, "mode": body.mode, "name": CONFIG.name, "profile": CONFIG.profile}
 
 
 @app.get("/status", response_model=RoverStatus)
 def status() -> RoverStatus:
+    ready = body.readiness()
     return RoverStatus(
         mode=body.mode,
+        name=CONFIG.name,
+        profile=CONFIG.profile,
         online=True,
         stopped=body.state.stopped,
         expression=body.state.expression,
         last_drive=body.state.last_drive,
         turret=body.state.turret,
         camera_ready=False,
-        mic_ready=False,
-        speaker_ready=False,
+        mic_ready=CONFIG.audio.mic == "usb",
+        speaker_ready=bool(CONFIG.audio.speaker_amp),
+        display_ready=ready["display_ready"],
+        motors_armed=ready["motors_armed"],
+        hardware_ready=ready["hardware_ready"],
+        safety=CONFIG.safety.model_dump(),
     )
+
+
+@app.get("/config")
+def config() -> dict:
+    return CONFIG.public_summary()
 
 
 @app.post("/drive")

@@ -20,6 +20,34 @@ def test_operator_panel():
     assert "/expression/preview.png" in r.text
 
 
+def test_config_endpoint():
+    r = client.get("/config")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["display"]["type"] == "waveshare-st7789"
+    assert data["motors"]["driver"] == "tb6612fng"
+    assert data["safety"]["bench_safe_no_motors"] is True
+
+
+def test_status_includes_readiness_and_safety():
+    r = client.get("/status")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["name"] == "cleo-rover-mk1"
+    assert data["hardware_ready"] is False
+    assert data["motors_armed"] is False
+    assert data["safety"]["max_drive_duration_ms"] == 2000
+
+
+def test_sensors_include_hardware_map():
+    r = client.get("/sensors")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["display"]["size"] == [240, 320]
+    assert data["motors"]["driver"] == "tb6612fng"
+    assert data["turret"]["driver"] == "pca9685"
+
+
 def test_expression_and_status():
     r = client.post("/expression", json={"mode": "listening", "text": "yes?", "brightness": 0.4})
     assert r.status_code == 200
