@@ -3,15 +3,22 @@ from __future__ import annotations
 import os
 
 from fastapi import FastAPI, Response
+from fastapi.responses import HTMLResponse
 
 from .drivers import RoverBody
 from .models import DriveCommand, ExpressionCommand, RoverStatus, TurretCommand
 from .renderer import render_expression
+from .ui import operator_panel_html
 
 ROVER_MODE = os.getenv("CLEO_ROVER_MODE", "sim")
 body = RoverBody(mode=ROVER_MODE)
 
 app = FastAPI(title="Cleo Rover Mk1 Body Service", version="0.1.0")
+
+
+@app.get("/", response_class=HTMLResponse)
+def operator_panel() -> str:
+    return operator_panel_html()
 
 
 @app.get("/health")

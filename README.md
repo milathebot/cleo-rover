@@ -39,6 +39,12 @@ Render screen-expression previews:
 python scripts/render_expressions.py
 ```
 
+Open browser operator panel while the service is running:
+
+```text
+http://127.0.0.1:8099/
+```
+
 Use the operator CLI:
 
 ```bash

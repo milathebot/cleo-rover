@@ -13,6 +13,13 @@ def test_health():
     assert r.json()["ok"] is True
 
 
+def test_operator_panel():
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "Cleo Rover Mk1" in r.text
+    assert "/expression/preview.png" in r.text
+
+
 def test_expression_and_status():
     r = client.post("/expression", json={"mode": "listening", "text": "yes?", "brightness": 0.4})
     assert r.status_code == 200
