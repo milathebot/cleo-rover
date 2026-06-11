@@ -1,0 +1,28 @@
+[project]
+name = "cleo-rover"
+version = "0.1.0"
+description = "Cleo Rover Mk1 body-control service for Raspberry Pi Zero 2 W"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+pi = [
+    "gpiozero>=2.0",
+    "lgpio>=0.2",
+    "spidev>=3.6",
+    "pillow>=10.0",
+    "numpy>=1.24",
+]
+
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
