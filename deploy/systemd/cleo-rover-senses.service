@@ -1,0 +1,14 @@
+[Unit]
+Description=Cleo Rover senses daemon
+After=cleo-rover-body.service
+Requires=cleo-rover-body.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/cleo-rover
+ExecStart=/home/pi/cleo-rover/.venv/bin/cleo-rover-senses --interval 2
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

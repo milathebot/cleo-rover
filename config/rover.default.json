@@ -52,5 +52,30 @@
   "audio": {
     "mic": "usb",
     "speaker_amp": "max98357a-i2s"
+  },
+  "life_loop": {
+    "enabled": true,
+    "data_path": "data/rover.sqlite",
+    "cleo_hub_url": "http://127.0.0.1:8787",
+    "personality": {
+      "baseline_mood": "calm",
+      "curiosity": 0.55,
+      "attention_seeking": 0.35,
+      "talkativeness": 0.25,
+      "shyness": 0.4
+    },
+    "quiet_hours": {
+      "enabled": true,
+      "start": "23:30",
+      "end": "09:00"
+    },
+    "behavior_cooldowns": {
+      "attention_ping_seconds": 1800,
+      "curious_scan_seconds": 90,
+      "idle_presence_seconds": 45,
+      "react_to_sound_seconds": 20,
+      "wake_response_seconds": 8,
+      "request_charge_seconds": 900
+    }
   }
 }

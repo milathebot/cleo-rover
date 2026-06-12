@@ -13,6 +13,8 @@ dependencies = [
 [project.scripts]
 cleo-rover = "rover.client:main"
 cleo-rover-brain = "rover.brain:main"
+cleo-rover-calibrate = "rover.calibrate:main"
+cleo-rover-senses = "rover.senses:main"
 
 [project.optional-dependencies]
 pi = [

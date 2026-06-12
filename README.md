@@ -14,6 +14,14 @@ This repo runs in `sim` mode now:
 - expression state for the 2-inch screen
 - PNG expression renderer for the Waveshare 2-inch screen
 - PC-side operator CLI
+- persistent SQLite autonomy state, events, cooldowns, and spatial memory
+- personality/life-loop config for curiosity, attention-seeking, quiet hours, and behavior cooldowns
+- Cleo Hub awareness for focus/quiet-mode context
+- browser autonomy dashboard at `/autonomy/dashboard`
+- safety simulator for obstacle, bump, low-battery, and disconnect scenarios
+- arrival-day calibration wizard scaffold
+- senses daemon stub for future mic/camera event streaming
+- systemd unit templates for Pi body, Pi senses, and PC brain services
 - PC-side `cleo-rover-brain` autonomy loop
 - event model for sound/speech/wake/motion/bump/battery/network stimuli
 - autonomy state engine: mood, attention, curiosity, energy, confidence
@@ -93,7 +101,12 @@ POST /events
 GET  /events/recent
 POST /heartbeat
 GET  /autonomy/state
+GET  /autonomy/dashboard
 POST /autonomy/tick
+GET  /cleo-hub
+GET  /map
+POST /map/remember
+POST /safety/simulate
 POST /hearing/simulate
 POST /vision/snapshot
 ```
@@ -149,6 +162,18 @@ Implemented behaviors:
 ### Phase E: vision hooks
 
 `/vision/snapshot` creates camera/motion events and returns an analysis stub. Real camera frames will route to Hermes/vision later.
+
+### Spatial memory / mapping scaffold
+
+Mk1 cannot do true SLAM before the camera, IMU, and motor odometry are wired, but it can now remember named landmarks and places:
+
+```bash
+curl -X POST http://127.0.0.1:8099/map/remember \
+  -H 'content-type: application/json' \
+  -d '{"id":"charger-dock","label":"Charging dock","kind":"dock","zone":"office","confidence":0.7}'
+```
+
+This stores observations in SQLite with zone, bearing, distance, confidence, notes, timestamps, and observation counts. After hardware arrives, camera/vision and odometry can update this into a simple topological room map.
 
 ### Phase F: limited movement autonomy
 

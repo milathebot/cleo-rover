@@ -23,6 +23,7 @@ def test_phase_b_autonomy_state_changes_from_stimulus():
 
 
 def test_phase_c_behavior_library_reacts_to_wake_word():
+    client.post("/heartbeat")
     client.post("/events", json={"kind": "wake_word", "source": "test", "label": "cleo"})
     r = client.post("/autonomy/tick", json={"allow_movement": False, "inject_idle_tick": False})
     assert r.status_code == 200

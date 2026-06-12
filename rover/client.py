@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     drive.add_argument("--duration-ms", type=int, default=250)
 
     expr = sub.add_parser("expression")
-    expr.add_argument("mode", choices=["idle", "listening", "thinking", "speaking", "alert", "charging", "disconnected", "manual"])
+    expr.add_argument("mode", choices=["idle", "listening", "thinking", "speaking", "alert", "charging", "disconnected", "manual", "curious", "watching", "seeking", "sleeping", "shy", "proud", "low_power"])
     expr.add_argument("--text", default=None)
     expr.add_argument("--brightness", type=float, default=0.6)
 

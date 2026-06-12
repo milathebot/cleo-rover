@@ -14,6 +14,13 @@ class ExpressionMode(str, Enum):
     charging = "charging"
     disconnected = "disconnected"
     manual = "manual"
+    curious = "curious"
+    watching = "watching"
+    seeking = "seeking"
+    sleeping = "sleeping"
+    shy = "shy"
+    proud = "proud"
+    low_power = "low_power"
 
 
 class RoverEventKind(str, Enum):
@@ -64,6 +71,21 @@ class BehaviorDecision(BaseModel):
     drive: "DriveCommand | None" = None
     speech: str | None = Field(default=None, max_length=240)
     stop: bool = False
+
+
+class SpatialMemoryItem(BaseModel):
+    id: str = Field(max_length=80)
+    label: str = Field(max_length=120)
+    kind: str = Field(default="object", max_length=40)
+    zone: str | None = Field(default=None, max_length=80)
+    bearing_deg: float | None = Field(default=None, ge=-180.0, le=180.0)
+    distance_m: float | None = Field(default=None, ge=0.0, le=50.0)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    notes: str | None = Field(default=None, max_length=240)
+    first_seen_at: float | None = None
+    last_seen_at: float | None = None
+    observations: int = Field(default=1, ge=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class AutonomyTickCommand(BaseModel):

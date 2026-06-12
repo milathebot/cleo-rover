@@ -67,6 +67,38 @@ class AudioConfig(BaseModel):
     speaker_amp: str = "max98357a-i2s"
 
 
+class PersonalityConfig(BaseModel):
+    baseline_mood: str = "calm"
+    curiosity: float = Field(default=0.55, ge=0.0, le=1.0)
+    attention_seeking: float = Field(default=0.35, ge=0.0, le=1.0)
+    talkativeness: float = Field(default=0.25, ge=0.0, le=1.0)
+    shyness: float = Field(default=0.40, ge=0.0, le=1.0)
+
+
+class QuietHoursConfig(BaseModel):
+    enabled: bool = True
+    start: str = "23:30"
+    end: str = "09:00"
+
+
+class BehaviorCooldownConfig(BaseModel):
+    attention_ping_seconds: int = 1800
+    curious_scan_seconds: int = 90
+    idle_presence_seconds: int = 45
+    react_to_sound_seconds: int = 20
+    wake_response_seconds: int = 8
+    request_charge_seconds: int = 900
+
+
+class LifeLoopConfig(BaseModel):
+    enabled: bool = True
+    data_path: str = "data/rover.sqlite"
+    cleo_hub_url: str = "http://127.0.0.1:8787"
+    personality: PersonalityConfig = Field(default_factory=PersonalityConfig)
+    quiet_hours: QuietHoursConfig = Field(default_factory=QuietHoursConfig)
+    behavior_cooldowns: BehaviorCooldownConfig = Field(default_factory=BehaviorCooldownConfig)
+
+
 class RoverConfig(BaseModel):
     name: str = "cleo-rover-mk1"
     profile: str = "bench-sim"
@@ -76,6 +108,7 @@ class RoverConfig(BaseModel):
     sensors: SensorConfig = Field(default_factory=SensorConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
+    life_loop: LifeLoopConfig = Field(default_factory=LifeLoopConfig)
 
     def public_summary(self) -> dict[str, Any]:
         return self.model_dump(exclude_none=True)

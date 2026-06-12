@@ -24,6 +24,13 @@ PALETTES: dict[ExpressionMode, Palette] = {
     ExpressionMode.charging: ((50, 230, 160), (72, 170, 255), (160, 90, 255)),
     ExpressionMode.disconnected: ((55, 70, 100), (120, 145, 190), (20, 30, 50)),
     ExpressionMode.manual: ((50, 255, 130), (80, 220, 255), (30, 160, 80)),
+    ExpressionMode.curious: ((120, 70, 255), (50, 245, 230), (245, 90, 200)),
+    ExpressionMode.watching: ((30, 100, 210), (80, 230, 255), (40, 60, 120)),
+    ExpressionMode.seeking: ((255, 90, 180), (120, 240, 255), (160, 90, 255)),
+    ExpressionMode.sleeping: ((20, 20, 55), (90, 80, 150), (10, 12, 28)),
+    ExpressionMode.shy: ((145, 70, 180), (255, 120, 190), (60, 50, 120)),
+    ExpressionMode.proud: ((255, 180, 65), (250, 90, 210), (80, 220, 255)),
+    ExpressionMode.low_power: ((120, 80, 40), (255, 90, 70), (50, 40, 35)),
 }
 
 LABELS: dict[ExpressionMode, str] = {
@@ -35,6 +42,13 @@ LABELS: dict[ExpressionMode, str] = {
     ExpressionMode.charging: "CHARGING",
     ExpressionMode.disconnected: "OFFLINE",
     ExpressionMode.manual: "MANUAL",
+    ExpressionMode.curious: "CURIOUS",
+    ExpressionMode.watching: "WATCHING",
+    ExpressionMode.seeking: "SEEKING",
+    ExpressionMode.sleeping: "SLEEPING",
+    ExpressionMode.shy: "QUIET",
+    ExpressionMode.proud: "GOOD",
+    ExpressionMode.low_power: "LOW POWER",
 }
 
 

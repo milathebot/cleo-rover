@@ -5,6 +5,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
+from .config import LifeLoopConfig
 from .models import AutonomyState, BehaviorDecision, DriveCommand, ExpressionCommand, ExpressionMode, RoverEvent, RoverEventKind, TurretCommand
 
 
@@ -40,9 +41,11 @@ class AutonomyEngine:
     motion remains gated by the body service's motor-arming/safety state.
     """
 
-    def __init__(self) -> None:
-        self.state = AutonomyState()
-        self.last_behavior_at: dict[str, float] = {}
+    def __init__(self, config: LifeLoopConfig | None = None, state: AutonomyState | None = None, cooldowns: dict[str, float] | None = None) -> None:
+        self.config = config or LifeLoopConfig()
+        p = self.config.personality
+        self.state = state or AutonomyState(mood=p.baseline_mood, curiosity=p.curiosity, attention=max(0.05, p.attention_seeking))
+        self.last_behavior_at: dict[str, float] = cooldowns or {}
 
     def _cooldown_ok(self, behavior: str, now: float, seconds: float) -> bool:
         return now - self.last_behavior_at.get(behavior, 0.0) >= seconds
@@ -90,7 +93,18 @@ class AutonomyEngine:
         for event in reversed(recent_events):
             self.update_from_event(event)
         body_status = body_status or {}
+        latest = recent_events[0] if recent_events else None
         motors_armed = bool(body_status.get("motors_armed"))
+        cooldowns = self.config.behavior_cooldowns
+        hub = body_status.get("hub") or {}
+        if hub.get("quiet_recommended"):
+            self.state.do_not_disturb = True
+            self.state.current_intent = "protect_focus"
+        elif self.state.do_not_disturb and not hub.get("quiet_recommended", False):
+            self.state.do_not_disturb = False
+
+        if self.state.do_not_disturb and latest and latest.kind not in {RoverEventKind.bump, RoverEventKind.obstacle, RoverEventKind.battery, RoverEventKind.network, RoverEventKind.wake_word}:
+            return BehaviorDecision(behavior="hold", reason="restraint: do-not-disturb or Cleo Hub focus is active", attention_level=0)
 
         if not self.state.connected:
             self._mark("show_disconnected", now)
@@ -101,18 +115,17 @@ class AutonomyEngine:
                 expression=ExpressionCommand(mode=ExpressionMode.disconnected, text="link lost", brightness=0.45),
             )
 
-        if self.state.energy < 0.22 and self._cooldown_ok("request_charge", now, 15 * 60):
+        if self.state.energy < 0.22 and self._cooldown_ok("request_charge", now, cooldowns.request_charge_seconds):
             self._mark("request_charge", now)
             return BehaviorDecision(
                 behavior="request_charge",
                 reason="battery/energy state is low",
                 attention_level=3,
-                expression=ExpressionCommand(mode=ExpressionMode.charging, text="low power", brightness=0.55),
+                expression=ExpressionCommand(mode=ExpressionMode.low_power, text="low power", brightness=0.55),
                 speech="Battery is getting low. I should be parked soon.",
             )
 
-        latest = recent_events[0] if recent_events else None
-        if latest and latest.kind == RoverEventKind.wake_word and self._cooldown_ok("wake_response", now, 8):
+        if latest and latest.kind == RoverEventKind.wake_word and self._cooldown_ok("wake_response", now, cooldowns.wake_response_seconds):
             self._mark("wake_response", now)
             return BehaviorDecision(
                 behavior="wake_response",
@@ -123,7 +136,7 @@ class AutonomyEngine:
                 turret=TurretCommand(pan_deg=0),
             )
 
-        if latest and latest.kind in {RoverEventKind.sound, RoverEventKind.speech} and self._cooldown_ok("react_to_sound", now, 20):
+        if latest and latest.kind in {RoverEventKind.sound, RoverEventKind.speech} and self._cooldown_ok("react_to_sound", now, cooldowns.react_to_sound_seconds):
             self._mark("react_to_sound", now)
             drive = DriveCommand(linear=0.0, turn=0.16, duration_ms=180) if allow_movement and motors_armed else None
             return BehaviorDecision(
@@ -144,17 +157,17 @@ class AutonomyEngine:
                 stop=True,
             )
 
-        if self.state.curiosity > 0.68 and self._cooldown_ok("curious_scan", now, 90):
+        if self.state.curiosity > 0.68 and self._cooldown_ok("curious_scan", now, cooldowns.curious_scan_seconds):
             self._mark("curious_scan", now)
             return BehaviorDecision(
                 behavior="curious_scan",
                 reason="curiosity above threshold",
                 attention_level=1,
-                expression=ExpressionCommand(mode=ExpressionMode.thinking, text="watching", brightness=0.5),
+                expression=ExpressionCommand(mode=ExpressionMode.watching, text="watching", brightness=0.5),
                 turret=TurretCommand(pan_deg=18),
             )
 
-        if self._cooldown_ok("idle_presence", now, 45):
+        if self._cooldown_ok("idle_presence", now, cooldowns.idle_presence_seconds):
             self._mark("idle_presence", now)
             return BehaviorDecision(
                 behavior="idle_presence",
