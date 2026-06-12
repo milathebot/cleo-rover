@@ -37,6 +37,18 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status")
     sub.add_parser("stop")
     sub.add_parser("sensors")
+    sub.add_parser("events")
+    sub.add_parser("autonomy")
+    sub.add_parser("tick")
+
+    event = sub.add_parser("event")
+    event.add_argument("kind", choices=["sound", "speech", "wake_word", "motion", "camera_snapshot", "button", "bump", "obstacle", "battery", "network", "manual_control", "idle_tick"])
+    event.add_argument("--source", default="cli")
+    event.add_argument("--label", default=None)
+    event.add_argument("--value", type=float, default=None)
+
+    sub.add_parser("hear")
+    sub.add_parser("snapshot")
 
     drive = sub.add_parser("drive")
     drive.add_argument("--linear", type=float, default=0.0)
@@ -59,6 +71,18 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "GET", "/status")
     elif args.cmd == "sensors":
         result = request(args.base, "GET", "/sensors")
+    elif args.cmd == "events":
+        result = request(args.base, "GET", "/events/recent")
+    elif args.cmd == "autonomy":
+        result = request(args.base, "GET", "/autonomy/state")
+    elif args.cmd == "tick":
+        result = request(args.base, "POST", "/autonomy/tick", {"allow_movement": False, "inject_idle_tick": True})
+    elif args.cmd == "event":
+        result = request(args.base, "POST", "/events", {"kind": args.kind, "source": args.source, "label": args.label, "value": args.value})
+    elif args.cmd == "hear":
+        result = request(args.base, "POST", "/hearing/simulate")
+    elif args.cmd == "snapshot":
+        result = request(args.base, "POST", "/vision/snapshot")
     elif args.cmd == "stop":
         result = request(args.base, "POST", "/stop")
     elif args.cmd == "drive":

@@ -14,6 +14,11 @@ This repo runs in `sim` mode now:
 - expression state for the 2-inch screen
 - PNG expression renderer for the Waveshare 2-inch screen
 - PC-side operator CLI
+- PC-side `cleo-rover-brain` autonomy loop
+- event model for sound/speech/wake/motion/bump/battery/network stimuli
+- autonomy state engine: mood, attention, curiosity, energy, confidence
+- safe behavior decisions for wake response, sound reaction, safety stop, curiosity scan, charge request, idle presence
+- hearing and vision simulation hooks for pre-hardware testing
 - camera/speaker/mic placeholders
 - config-driven hardware map and safety limits
 - `/config` endpoint for pin/driver readiness
@@ -52,9 +57,26 @@ Use the operator CLI:
 ```bash
 cleo-rover status
 cleo-rover expression thinking --text booting
+cleo-rover event wake_word --label Cleo
+cleo-rover hear
+cleo-rover snapshot
+cleo-rover tick
+cleo-rover autonomy
 cleo-rover drive --linear 0.2 --duration-ms 250
 cleo-rover stop
 ```
+
+Run the PC-side autonomy brain loop:
+
+```bash
+cleo-rover-brain --once
+cleo-rover-brain --interval 5
+```
+
+Movement requests remain disabled unless both are true:
+
+1. the brain is started with `--allow-movement`; and
+2. the body reports `motors_armed: true` from hardware config/readiness.
 
 ## API
 
@@ -67,7 +89,70 @@ POST /stop
 POST /expression
 POST /turret
 GET  /sensors
+POST /events
+GET  /events/recent
+POST /heartbeat
+GET  /autonomy/state
+POST /autonomy/tick
+POST /hearing/simulate
+POST /vision/snapshot
 ```
+
+## Autonomy phases implemented
+
+### Phase A: event model
+
+The rover can now receive and retain recent stimulus events:
+
+- sound
+- speech
+- wake word
+- motion
+- camera snapshot
+- button
+- bump/obstacle
+- battery
+- network
+- manual control
+- idle tick
+
+### Phase B: Cleo body state engine
+
+The autonomy engine maintains:
+
+- mood
+- attention
+- curiosity
+- energy
+- confidence
+- connection state
+- current intent
+- last stimulus and last behavior
+
+### Phase C: safe behavior library
+
+Implemented behaviors:
+
+- `wake_response`
+- `react_to_sound`
+- `safety_stop`
+- `curious_scan`
+- `request_charge`
+- `idle_presence`
+- `show_disconnected`
+- `hold`
+
+### Phase D: voice/hearing hooks
+
+`/hearing/simulate` creates sound/speech/wake events now. Real mic/audio routing will replace this after the USB mic is validated.
+
+### Phase E: vision hooks
+
+`/vision/snapshot` creates camera/motion events and returns an analysis stub. Real camera frames will route to Hermes/vision later.
+
+### Phase F: limited movement autonomy
+
+Autonomy can request tiny movement, but the body refuses real movement unless movement is explicitly allowed and motors are armed. The default config remains bench-safe.
 
 ## Hardware config
 

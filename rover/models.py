@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
 from pydantic import BaseModel, Field
 
 
@@ -13,6 +14,61 @@ class ExpressionMode(str, Enum):
     charging = "charging"
     disconnected = "disconnected"
     manual = "manual"
+
+
+class RoverEventKind(str, Enum):
+    sound = "sound"
+    speech = "speech"
+    wake_word = "wake_word"
+    motion = "motion"
+    camera_snapshot = "camera_snapshot"
+    button = "button"
+    bump = "bump"
+    obstacle = "obstacle"
+    battery = "battery"
+    network = "network"
+    manual_control = "manual_control"
+    idle_tick = "idle_tick"
+
+
+class RoverEvent(BaseModel):
+    kind: RoverEventKind
+    source: str = Field(default="sim", max_length=40)
+    value: float | None = None
+    label: str | None = Field(default=None, max_length=80)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    timestamp: float | None = None
+
+
+class AutonomyState(BaseModel):
+    enabled: bool = True
+    mood: str = "calm"
+    attention: float = Field(default=0.25, ge=0.0, le=1.0)
+    curiosity: float = Field(default=0.35, ge=0.0, le=1.0)
+    energy: float = Field(default=0.80, ge=0.0, le=1.0)
+    confidence: float = Field(default=0.65, ge=0.0, le=1.0)
+    connected: bool = True
+    do_not_disturb: bool = False
+    current_intent: str = "quiet_presence"
+    last_stimulus_at: float | None = None
+    last_behavior: str | None = None
+    last_decision_at: float | None = None
+
+
+class BehaviorDecision(BaseModel):
+    behavior: str
+    reason: str
+    attention_level: int = Field(default=0, ge=0, le=4)
+    expression: "ExpressionCommand | None" = None
+    turret: "TurretCommand | None" = None
+    drive: "DriveCommand | None" = None
+    speech: str | None = Field(default=None, max_length=240)
+    stop: bool = False
+
+
+class AutonomyTickCommand(BaseModel):
+    allow_movement: bool = False
+    inject_idle_tick: bool = True
 
 
 class DriveCommand(BaseModel):
