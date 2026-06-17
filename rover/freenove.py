@@ -11,14 +11,17 @@ PCA9685_ADDRESS = 0x40
 PCA9685_PWM_FREQUENCY_HZ = 50
 PCA9685_MAX_DUTY = 4095
 
-# Derived from Freenove FNK0043 Code/Server/motor.py, commit a49db4b.
+# Derived from Freenove FNK0043 Code/Server/motor.py, commit a49db4b,
+# then corrected against Noot's physical Cleo Rover bench test on 2026-06-17.
 # We keep this as a clean-room map/driver inside Cleo Rover rather than running
 # Freenove's TCP/app stack.
+# Tuple order is (reverse_channel, forward_channel) from the rover's physical
+# perspective. Positive Cleo drive duty should make the wheel roll forward.
 FREENOVE_WHEEL_CHANNELS: dict[str, tuple[int, int]] = {
-    "left_upper": (0, 1),
-    "left_lower": (3, 2),
-    "right_upper": (6, 7),
-    "right_lower": (4, 5),
+    "left_upper": (1, 0),
+    "left_lower": (2, 3),
+    "right_upper": (7, 6),
+    "right_lower": (5, 4),
 }
 
 FREENOVE_SERVO_CHANNELS: dict[str, int] = {

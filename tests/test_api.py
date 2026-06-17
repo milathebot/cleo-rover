@@ -47,7 +47,7 @@ def test_sensors_include_hardware_map():
     assert data["display"]["size"] == [240, 320]
     assert data["motors"]["driver"] == "freenove-pca9685-4wd"
     assert data["freenove_map"]["pca9685"]["i2c_address"] == "0x40"
-    assert data["freenove_map"]["motors"]["channels"]["left_upper"] == [0, 1]
+    assert data["freenove_map"]["motors"]["channels"]["left_upper"] == [1, 0]
     assert data["freenove_map"]["line_sensors_bcm"]["center"] == 15
     assert data["turret"]["driver"] == "pca9685"
 

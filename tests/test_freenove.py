@@ -4,10 +4,10 @@ from rover.models import DriveCommand
 
 def test_freenove_channel_map_matches_ordinary_car_board():
     assert FREENOVE_WHEEL_CHANNELS == {
-        "left_upper": (0, 1),
-        "left_lower": (3, 2),
-        "right_upper": (6, 7),
-        "right_lower": (4, 5),
+        "left_upper": (1, 0),
+        "left_lower": (2, 3),
+        "right_upper": (7, 6),
+        "right_lower": (5, 4),
     }
 
 
