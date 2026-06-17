@@ -22,15 +22,16 @@ class DisplayConfig(BaseModel):
 
 
 class MotorConfig(BaseModel):
-    driver: str = "tb6612fng"
+    driver: str = "freenove-pca9685-4wd"
+    i2c_address: str = "0x40"
     left_pwm_pin: int | None = None
     left_in1_pin: int | None = None
     left_in2_pin: int | None = None
     right_pwm_pin: int | None = None
     right_in1_pin: int | None = None
     right_in2_pin: int | None = None
-    pwm_frequency_hz: int = 1000
-    max_duty_cycle: float = Field(default=0.55, ge=0.0, le=1.0)
+    pwm_frequency_hz: int = 50
+    max_duty_cycle: float = Field(default=0.35, ge=0.0, le=1.0)
     invert_left: bool = False
     invert_right: bool = False
 

@@ -13,15 +13,10 @@
     "backlight_pin": 18
   },
   "motors": {
-    "driver": "tb6612fng",
-    "left_pwm_pin": 12,
-    "left_in1_pin": 5,
-    "left_in2_pin": 6,
-    "right_pwm_pin": 13,
-    "right_in1_pin": 20,
-    "right_in2_pin": 21,
-    "pwm_frequency_hz": 1000,
-    "max_duty_cycle": 0.55,
+    "driver": "freenove-pca9685-4wd",
+    "i2c_address": "0x40",
+    "pwm_frequency_hz": 50,
+    "max_duty_cycle": 0.35,
     "invert_left": false,
     "invert_right": false
   },

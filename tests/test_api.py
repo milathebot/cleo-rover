@@ -25,7 +25,8 @@ def test_config_endpoint():
     assert r.status_code == 200
     data = r.json()
     assert data["display"]["type"] == "waveshare-st7789"
-    assert data["motors"]["driver"] == "tb6612fng"
+    assert data["motors"]["driver"] == "freenove-pca9685-4wd"
+    assert data["motors"]["i2c_address"] == "0x40"
     assert data["safety"]["bench_safe_no_motors"] is True
 
 
@@ -44,7 +45,10 @@ def test_sensors_include_hardware_map():
     assert r.status_code == 200
     data = r.json()
     assert data["display"]["size"] == [240, 320]
-    assert data["motors"]["driver"] == "tb6612fng"
+    assert data["motors"]["driver"] == "freenove-pca9685-4wd"
+    assert data["freenove_map"]["pca9685"]["i2c_address"] == "0x40"
+    assert data["freenove_map"]["motors"]["channels"]["left_upper"] == [0, 1]
+    assert data["freenove_map"]["line_sensors_bcm"]["center"] == 15
     assert data["turret"]["driver"] == "pca9685"
 
 

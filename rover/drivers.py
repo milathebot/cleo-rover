@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .config import RoverConfig
+from .freenove import FreenoveHardware, drive_to_wheel_duty, freenove_hardware_map
 from .models import DriveCommand, ExpressionCommand, ExpressionMode, TurretCommand
 
 
@@ -35,6 +36,9 @@ class RoverBody:
         self.hardware_ready = mode == "hardware" and not self.config.safety.bench_safe_no_motors
         self.display_ready = mode == "hardware"
         self.motors_armed = self.hardware_ready
+        self.hardware: FreenoveHardware | None = None
+        if self.hardware_ready and self.config.motors.driver == "freenove-pca9685-4wd":
+            self.hardware = FreenoveHardware(self.config)
 
     async def drive(self, command: DriveCommand) -> None:
         safe_duration = min(command.duration_ms, self.config.safety.max_drive_duration_ms)
@@ -42,6 +46,9 @@ class RoverBody:
         self.state.stopped = False
         self.state.last_drive = command
         self.state.last_drive_at = time.time()
+
+        if self.hardware and self.motors_armed:
+            self.hardware.drive(command)
 
         if self._stop_task and not self._stop_task.done():
             self._stop_task.cancel()
@@ -54,7 +61,8 @@ class RoverBody:
 
     async def stop(self) -> None:
         self.state.stopped = True
-        # In hardware mode this will immediately zero motor PWM.
+        if self.hardware:
+            self.hardware.stop()
 
     async def set_expression(self, command: ExpressionCommand) -> None:
         self.state.expression = command
@@ -62,8 +70,8 @@ class RoverBody:
 
     async def set_turret(self, command: TurretCommand) -> None:
         self.state.turret = command
-        # Hardware mode: fixed camera pod means this may become a no-op unless
-        # the Freenove kit's servo head is retained.
+        if self.hardware:
+            self.hardware.set_turret(command)
 
     def readiness(self) -> dict[str, bool]:
         return {
@@ -92,7 +100,13 @@ class RoverBody:
                 "driver": self.config.motors.driver,
                 "armed": self.motors_armed,
                 "max_duty_cycle": self.config.motors.max_duty_cycle,
+                "last_wheel_duty": drive_to_wheel_duty(
+                    self.state.last_drive, self.config.motors.max_duty_cycle
+                ).as_dict()
+                if self.state.last_drive
+                else None,
             },
+            "freenove_map": freenove_hardware_map(self.config),
             "turret": {
                 "driver": self.config.turret.driver,
                 "pan_range": [self.config.turret.pan_min_deg, self.config.turret.pan_max_deg],

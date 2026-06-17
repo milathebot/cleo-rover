@@ -2,7 +2,7 @@
 
 Body-control service for Cleo Rover Mk1.
 
-The Pi Zero 2 W is the body controller. Hermes/Cleo on the PC is the brain.
+The Raspberry Pi 3B+ is the current body controller for the stock Freenove chassis. Hermes/Cleo on the PC is the brain.
 
 ## What works before hardware arrives
 
@@ -29,6 +29,7 @@ This repo runs in `sim` mode now:
 - hearing and vision simulation hooks for pre-hardware testing
 - camera/speaker/mic placeholders
 - config-driven hardware map and safety limits
+- custom Cleo-native Freenove FNK0043 motor/servo map derived from the vendor codebase
 - `/config` endpoint for pin/driver readiness
 - smoke tests
 
@@ -198,7 +199,23 @@ The default profile is bench-safe:
 - `bench_safe_no_motors: true`
 - motors report unarmed
 - drive commands still exercise the API and timeout logic
-- `/sensors` exposes the display, motor, turret, and safety map
+- `/sensors` exposes the display, motor, turret, Freenove channel map, and safety map
+
+### Freenove stock-board map
+
+We do **not** run Freenove's robot app/TCP server for Cleo Rover. The vendor repo is used only as a hardware reference. Cleo Rover now has its own native driver map in `rover/freenove.py`:
+
+- PCA9685 I2C address: `0x40`
+- PWM frequency: `50 Hz`
+- left upper motor: PCA9685 channels `0/1`
+- left lower motor: channels `3/2`
+- right upper motor: channels `6/7`
+- right lower motor: channels `4/5`
+- pan/tilt servos: channels `8/9`
+- line sensors BCM pins: `14/15/23`
+- ultrasonic BCM pins: trigger `27`, echo `22`
+
+The default max duty cycle is conservative at `0.35`, and real motor output stays disabled until a local config explicitly sets `bench_safe_no_motors: false` and the chassis is lifted for first movement tests.
 
 ## Arrival-day checklist
 
@@ -218,9 +235,8 @@ When parts arrive:
 
 When the parts arrive, we will add concrete drivers for:
 
-- Freenove motor board
 - Waveshare 2-inch ST7789 screen
 - Freenove 8MP camera stream
 - USB mic/speaker routing
 
-Until then, the API contract is stable and testable.
+The stock Freenove motor/servo board already has a Cleo-native driver scaffold, but it must not be armed until I2C is detected and the wheels are lifted.
