@@ -48,6 +48,25 @@ def _safe_sleep(seconds: float, sleep_fn: Callable[[float], None]) -> None:
     sleep_fn(max(0.0, seconds))
 
 
+def _turret_glide(
+    request: RequestFn,
+    actions: list[dict[str, Any]],
+    *,
+    start: float,
+    end: float,
+    steps: int = 4,
+    pause: float = 0.12,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> None:
+    """Move the turret in small increments so presence glances feel softer."""
+
+    steps = max(1, int(steps))
+    for index in range(1, steps + 1):
+        pan = round(start + (end - start) * index / steps, 1)
+        actions.append({"turret": _post(request, "/turret", {"pan_deg": pan}), "pan_deg": pan})
+        _safe_sleep(pause, sleep_fn)
+
+
 def run_dance(
     request: RequestFn,
     *,
@@ -144,9 +163,12 @@ def run_presence_tick(
     actions.append({"rgb": set_rgb_mode(request, mode), "mode": mode})
 
     if glance:
-        for pan in (-18, 18, 0):
-            actions.append({"turret": _post(request, "/turret", {"pan_deg": pan}), "pan_deg": pan})
-            _safe_sleep(0.2, sleep_fn)
+        # Presence should feel like a gentle living glance, not a fast scan.
+        _turret_glide(request, actions, start=0, end=-14, steps=4, pause=0.12, sleep_fn=sleep_fn)
+        _safe_sleep(0.15, sleep_fn)
+        _turret_glide(request, actions, start=-14, end=14, steps=7, pause=0.12, sleep_fn=sleep_fn)
+        _safe_sleep(0.15, sleep_fn)
+        _turret_glide(request, actions, start=14, end=0, steps=4, pause=0.12, sleep_fn=sleep_fn)
 
     capture = None
     if snapshot:
