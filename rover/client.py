@@ -7,6 +7,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from .choreo import RGB_MODES, rgb_payload, run_dance, run_presence_tick
+
 DEFAULT_BASE = "http://127.0.0.1:8099"
 
 
@@ -56,6 +58,18 @@ def main(argv: list[str] | None = None) -> int:
     rgb.add_argument("--blue", type=int, default=0)
     rgb.add_argument("--brightness", type=int, default=24)
 
+    rgb_mode = sub.add_parser("rgb-mode")
+    rgb_mode.add_argument("mode", choices=sorted(RGB_MODES))
+
+    dance = sub.add_parser("dance")
+    dance.add_argument("--lifted", action="store_true", help="Confirm wheels are lifted / bench safe for motor movement")
+    dance.add_argument("--no-motors", action="store_true", help="Run only RGB and turret movements")
+    dance.add_argument("--intensity", type=float, default=1.0, help="Motor intensity multiplier, clamped to 0.2..1.4")
+
+    presence = sub.add_parser("presence-tick")
+    presence.add_argument("--no-glance", action="store_true")
+    presence.add_argument("--snapshot", action="store_true")
+
     drive = sub.add_parser("drive")
     drive.add_argument("--linear", type=float, default=0.0)
     drive.add_argument("--turn", type=float, default=0.0)
@@ -91,6 +105,12 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "POST", "/vision/snapshot")
     elif args.cmd == "rgb":
         result = request(args.base, "POST", "/rgb", {"red": args.red, "green": args.green, "blue": args.blue, "brightness": args.brightness})
+    elif args.cmd == "rgb-mode":
+        result = request(args.base, "POST", "/rgb", rgb_payload(args.mode))
+    elif args.cmd == "dance":
+        result = run_dance(lambda method, path, payload=None: request(args.base, method, path, payload), lifted=args.lifted, no_motors=args.no_motors, intensity=args.intensity)
+    elif args.cmd == "presence-tick":
+        result = run_presence_tick(lambda method, path, payload=None: request(args.base, method, path, payload), glance=not args.no_glance, snapshot=args.snapshot)
     elif args.cmd == "stop":
         result = request(args.base, "POST", "/stop")
     elif args.cmd == "drive":
