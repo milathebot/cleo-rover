@@ -50,6 +50,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("hear")
     sub.add_parser("snapshot")
 
+    rgb = sub.add_parser("rgb")
+    rgb.add_argument("--red", type=int, default=0)
+    rgb.add_argument("--green", type=int, default=0)
+    rgb.add_argument("--blue", type=int, default=0)
+    rgb.add_argument("--brightness", type=int, default=24)
+
     drive = sub.add_parser("drive")
     drive.add_argument("--linear", type=float, default=0.0)
     drive.add_argument("--turn", type=float, default=0.0)
@@ -83,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "POST", "/hearing/simulate")
     elif args.cmd == "snapshot":
         result = request(args.base, "POST", "/vision/snapshot")
+    elif args.cmd == "rgb":
+        result = request(args.base, "POST", "/rgb", {"red": args.red, "green": args.green, "blue": args.blue, "brightness": args.brightness})
     elif args.cmd == "stop":
         result = request(args.base, "POST", "/stop")
     elif args.cmd == "drive":

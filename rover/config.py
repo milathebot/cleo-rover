@@ -48,11 +48,34 @@ class TurretConfig(BaseModel):
 
 
 class SensorConfig(BaseModel):
-    front_tof: str = "vl53l1x"
+    front_tof: str = "hc-sr04"
     imu: str = "bno055_or_mpu6050"
     bumper_left_pin: int | None = None
     bumper_right_pin: int | None = None
-    battery_monitor: str = "power-bank-unknown"
+    battery_monitor: str = "ads7830-channel-2"
+    adc_i2c_address: str = "0x48"
+    adc_voltage_coefficient: float = 5.2
+    line_left_pin: int = 14
+    line_center_pin: int = 15
+    line_right_pin: int = 23
+    ultrasonic_trigger_pin: int = 27
+    ultrasonic_echo_pin: int = 22
+
+
+class CameraConfig(BaseModel):
+    driver: str = "rpicam-still"
+    width: int = 1296
+    height: int = 972
+    capture_dir: str = "captures"
+
+
+class RGBConfig(BaseModel):
+    driver: str = "spi-ws2812"
+    count: int = 8
+    spi_bus: int = 0
+    spi_device: int = 0
+    color_order: str = "GRB"
+    brightness: int = Field(default=24, ge=0, le=255)
 
 
 class SafetyConfig(BaseModel):
@@ -107,6 +130,8 @@ class RoverConfig(BaseModel):
     motors: MotorConfig = Field(default_factory=MotorConfig)
     turret: TurretConfig = Field(default_factory=TurretConfig)
     sensors: SensorConfig = Field(default_factory=SensorConfig)
+    camera: CameraConfig = Field(default_factory=CameraConfig)
+    rgb: RGBConfig = Field(default_factory=RGBConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     life_loop: LifeLoopConfig = Field(default_factory=LifeLoopConfig)

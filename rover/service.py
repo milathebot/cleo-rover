@@ -10,7 +10,8 @@ from .autonomy import AutonomyEngine, EventStore
 from .config import load_config
 from .drivers import RoverBody
 from .hub import fetch_hub_snapshot
-from .models import AutonomyTickCommand, BehaviorDecision, DriveCommand, ExpressionCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand
+from .models import AutonomyTickCommand, BehaviorDecision, DriveCommand, ExpressionCommand, RGBCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand
+from .peripherals import capture_camera_snapshot
 from .persistence import RoverStore
 from .renderer import render_expression
 from .safety_sim import scenarios
@@ -75,6 +76,7 @@ def health() -> dict:
 @app.get("/status", response_model=RoverStatus)
 def status() -> RoverStatus:
     ready = body.readiness()
+    sensor_snapshot = body.sensors()
     return RoverStatus(
         mode=body.mode,
         name=CONFIG.name,
@@ -84,7 +86,9 @@ def status() -> RoverStatus:
         expression=body.state.expression,
         last_drive=body.state.last_drive,
         turret=body.state.turret,
-        camera_ready=False,
+        battery_percent=sensor_snapshot.get("battery_percent"),
+        battery_voltage=sensor_snapshot.get("battery_voltage"),
+        camera_ready=body.camera_ready(),
         mic_ready=CONFIG.audio.mic == "usb",
         speaker_ready=bool(CONFIG.audio.speaker_amp),
         display_ready=ready["display_ready"],
@@ -129,6 +133,11 @@ async def turret(command: TurretCommand) -> dict:
     return {"ok": True, "turret": command.model_dump()}
 
 
+@app.post("/rgb")
+def rgb(command: RGBCommand) -> dict:
+    return body.set_rgb(command)
+
+
 @app.get("/sensors")
 def sensors() -> dict:
     return body.sensors()
@@ -169,16 +178,24 @@ def simulate_hearing(event: RoverEvent | None = None) -> dict:
 
 
 @app.post("/vision/snapshot")
-def simulate_vision_snapshot(event: RoverEvent | None = None) -> dict:
-    event = event or RoverEvent(kind=RoverEventKind.camera_snapshot, source="sim_camera", label="snapshot", payload={"simulated": True})
+def vision_snapshot(event: RoverEvent | None = None) -> dict:
+    capture = None
+    if body.mode == "hardware":
+        capture = capture_camera_snapshot(CONFIG.camera.capture_dir, width=CONFIG.camera.width, height=CONFIG.camera.height)
+        payload = {"simulated": False, "capture": capture}
+        label = "snapshot" if capture.get("ok") else "snapshot failed"
+        event = RoverEvent(kind=RoverEventKind.camera_snapshot, source="camera", label=label, payload=payload)
+    else:
+        event = event or RoverEvent(kind=RoverEventKind.camera_snapshot, source="sim_camera", label="snapshot", payload={"simulated": True})
     if event.kind not in {RoverEventKind.camera_snapshot, RoverEventKind.motion}:
         event = event.model_copy(update={"kind": RoverEventKind.camera_snapshot})
     saved = store.add_event(event)
     events.add(saved)
     autonomy.update_from_event(saved)
     return {
-        "ok": True,
+        "ok": bool(capture.get("ok", True)) if capture is not None else True,
         "event": saved.model_dump(),
+        "capture": capture,
         "analysis_stub": {
             "person_seen": bool(saved.payload.get("person_seen", False)),
             "motion_seen": saved.kind == RoverEventKind.motion or bool(saved.payload.get("motion_seen", False)),

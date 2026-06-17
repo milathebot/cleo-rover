@@ -109,6 +109,13 @@ class ExpressionCommand(BaseModel):
     brightness: float = Field(default=0.6, ge=0.0, le=1.0)
 
 
+class RGBCommand(BaseModel):
+    red: int = Field(default=0, ge=0, le=255)
+    green: int = Field(default=0, ge=0, le=255)
+    blue: int = Field(default=0, ge=0, le=255)
+    brightness: int = Field(default=24, ge=0, le=255)
+
+
 class RoverStatus(BaseModel):
     mode: str
     name: str = "cleo-rover-mk1"

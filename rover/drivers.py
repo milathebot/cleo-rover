@@ -7,7 +7,8 @@ from typing import Any
 
 from .config import RoverConfig
 from .freenove import FreenoveHardware, drive_to_wheel_duty, freenove_hardware_map
-from .models import DriveCommand, ExpressionCommand, ExpressionMode, TurretCommand
+from .models import DriveCommand, ExpressionCommand, ExpressionMode, RGBCommand, TurretCommand
+from .peripherals import FreenoveSensorReader, camera_ready, rgb_ready, set_rgb
 
 
 @dataclass
@@ -73,6 +74,17 @@ class RoverBody:
         if self.hardware:
             self.hardware.set_turret(command)
 
+    def set_rgb(self, command: RGBCommand) -> dict[str, Any]:
+        if self.mode != "hardware":
+            return {"ok": True, "simulated": True, "rgb": command.model_dump()}
+        return set_rgb(command.red, command.green, command.blue, brightness=command.brightness, count=self.config.rgb.count)
+
+    def camera_ready(self) -> bool:
+        return self.mode == "hardware" and camera_ready()
+
+    def rgb_ready(self) -> bool:
+        return self.mode == "hardware" and rgb_ready()
+
     def readiness(self) -> dict[str, bool]:
         return {
             "hardware_ready": self.hardware_ready,
@@ -82,14 +94,51 @@ class RoverBody:
         }
 
     def sensors(self) -> dict[str, Any]:
+        live: dict[str, Any] = {
+            "front_distance_cm": None,
+            "front_stop_distance_cm": self.config.safety.front_stop_distance_cm,
+            "line_sensors": None,
+            "line_sensors_ready": False,
+            "ultrasonic_ready": False,
+            "adc_channels": None,
+            "adc_ready": False,
+            "battery_percent": None,
+            "battery_voltage": None,
+            "errors": {},
+        }
+        if self.mode == "hardware":
+            live = FreenoveSensorReader(
+                front_stop_distance_cm=self.config.safety.front_stop_distance_cm,
+                adc_voltage_coefficient=self.config.sensors.adc_voltage_coefficient,
+            ).snapshot()
+
         return {
             "mode": self.mode,
             "simulated": self.mode == "sim",
-            "front_distance_cm": None,
+            "front_distance_cm": live.get("front_distance_cm"),
             "front_stop_distance_cm": self.config.safety.front_stop_distance_cm,
+            "line_sensors": live.get("line_sensors"),
+            "line_sensors_ready": live.get("line_sensors_ready", False),
+            "ultrasonic_ready": live.get("ultrasonic_ready", False),
+            "adc_channels": live.get("adc_channels"),
+            "adc_ready": live.get("adc_ready", False),
             "imu": None,
-            "battery_percent": None,
-            "battery_voltage": None,
+            "battery_percent": live.get("battery_percent"),
+            "battery_voltage": live.get("battery_voltage"),
+            "camera": {
+                "driver": self.config.camera.driver,
+                "ready": self.camera_ready(),
+                "capture_dir": self.config.camera.capture_dir,
+                "size": [self.config.camera.width, self.config.camera.height],
+            },
+            "rgb": {
+                "driver": self.config.rgb.driver,
+                "ready": self.rgb_ready(),
+                "count": self.config.rgb.count,
+                "spi": [self.config.rgb.spi_bus, self.config.rgb.spi_device],
+                "color_order": self.config.rgb.color_order,
+                "brightness": self.config.rgb.brightness,
+            },
             "display": {
                 "type": self.config.display.type,
                 "ready": self.display_ready,
@@ -112,4 +161,5 @@ class RoverBody:
                 "pan_range": [self.config.turret.pan_min_deg, self.config.turret.pan_max_deg],
                 "tilt_range": [self.config.turret.tilt_min_deg, self.config.turret.tilt_max_deg],
             },
+            "errors": live.get("errors", {}),
         }

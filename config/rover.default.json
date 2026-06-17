@@ -31,11 +31,32 @@
     "tilt_max_deg": 45
   },
   "sensors": {
-    "front_tof": "vl53l1x",
+    "front_tof": "hc-sr04",
     "imu": "bno055_or_mpu6050",
     "bumper_left_pin": 16,
     "bumper_right_pin": 26,
-    "battery_monitor": "power-bank-unknown"
+    "battery_monitor": "ads7830-channel-2",
+    "adc_i2c_address": "0x48",
+    "adc_voltage_coefficient": 5.2,
+    "line_left_pin": 14,
+    "line_center_pin": 15,
+    "line_right_pin": 23,
+    "ultrasonic_trigger_pin": 27,
+    "ultrasonic_echo_pin": 22
+  },
+  "camera": {
+    "driver": "rpicam-still",
+    "width": 1296,
+    "height": 972,
+    "capture_dir": "captures"
+  },
+  "rgb": {
+    "driver": "spi-ws2812",
+    "count": 8,
+    "spi_bus": 0,
+    "spi_device": 0,
+    "color_order": "GRB",
+    "brightness": 24
   },
   "safety": {
     "max_drive_duration_ms": 2000,

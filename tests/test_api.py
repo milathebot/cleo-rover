@@ -46,10 +46,22 @@ def test_sensors_include_hardware_map():
     data = r.json()
     assert data["display"]["size"] == [240, 320]
     assert data["motors"]["driver"] == "freenove-pca9685-4wd"
+    assert data["camera"]["driver"] == "rpicam-still"
+    assert data["rgb"]["driver"] == "spi-ws2812"
+    assert data["rgb"]["count"] == 8
     assert data["freenove_map"]["pca9685"]["i2c_address"] == "0x40"
     assert data["freenove_map"]["motors"]["channels"]["left_upper"] == [1, 0]
     assert data["freenove_map"]["line_sensors_bcm"]["center"] == 15
     assert data["turret"]["driver"] == "pca9685"
+
+
+def test_rgb_endpoint_simulates_off_hardware():
+    r = client.post("/rgb", json={"red": 120, "green": 0, "blue": 255, "brightness": 24})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["simulated"] is True
+    assert data["rgb"]["blue"] == 255
 
 
 def test_expression_and_status():
