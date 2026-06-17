@@ -40,6 +40,20 @@ def test_status_includes_readiness_and_safety():
     assert data["safety"]["max_drive_duration_ms"] == 2000
 
 
+def test_hardware_presence_profile_initializes_hardware_without_arming_motors(monkeypatch):
+    from rover.config import RoverConfig
+    import rover.drivers as drivers
+
+    class DummyHardware:
+        def __init__(self, config):
+            self.config = config
+
+    monkeypatch.setattr(drivers, "FreenoveHardware", DummyHardware)
+    body = drivers.RoverBody(mode="hardware", config=RoverConfig.model_validate({"safety": {"bench_safe_no_motors": True}}))
+    assert body.hardware_ready is True
+    assert body.motors_armed is False
+
+
 def test_sensors_include_hardware_map():
     r = client.get("/sensors")
     assert r.status_code == 200

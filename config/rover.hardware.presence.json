@@ -1,0 +1,97 @@
+{
+  "name": "cleo-rover-mk1",
+  "profile": "hardware-presence-no-motors",
+  "display": {
+    "type": "waveshare-st7789",
+    "width": 240,
+    "height": 320,
+    "rotation": 180,
+    "spi_bus": 0,
+    "spi_device": 0,
+    "dc_pin": 25,
+    "reset_pin": 27,
+    "backlight_pin": 18
+  },
+  "motors": {
+    "driver": "freenove-pca9685-4wd",
+    "i2c_address": "0x40",
+    "pwm_frequency_hz": 50,
+    "max_duty_cycle": 0.28,
+    "invert_left": false,
+    "invert_right": false
+  },
+  "turret": {
+    "driver": "pca9685",
+    "i2c_address": "0x40",
+    "pan_channel": 0,
+    "tilt_channel": 1,
+    "pan_min_deg": -70,
+    "pan_max_deg": 70,
+    "tilt_min_deg": -35,
+    "tilt_max_deg": 45
+  },
+  "sensors": {
+    "front_tof": "hc-sr04",
+    "imu": "bno055_or_mpu6050",
+    "bumper_left_pin": 16,
+    "bumper_right_pin": 26,
+    "battery_monitor": "ads7830-channel-2",
+    "adc_i2c_address": "0x48",
+    "adc_voltage_coefficient": 5.2,
+    "line_left_pin": 14,
+    "line_center_pin": 15,
+    "line_right_pin": 23,
+    "ultrasonic_trigger_pin": 27,
+    "ultrasonic_echo_pin": 22
+  },
+  "camera": {
+    "driver": "rpicam-still",
+    "width": 1296,
+    "height": 972,
+    "capture_dir": "captures"
+  },
+  "rgb": {
+    "driver": "spi-ws2812",
+    "count": 8,
+    "spi_bus": 0,
+    "spi_device": 0,
+    "color_order": "GRB",
+    "brightness": 18
+  },
+  "safety": {
+    "max_drive_duration_ms": 500,
+    "default_drive_duration_ms": 250,
+    "heartbeat_timeout_ms": 1500,
+    "front_stop_distance_cm": 18,
+    "bench_safe_no_motors": true
+  },
+  "audio": {
+    "mic": "usb",
+    "speaker_amp": "max98357a-i2s"
+  },
+  "life_loop": {
+    "enabled": true,
+    "data_path": "data/rover.sqlite",
+    "cleo_hub_url": "http://127.0.0.1:8787",
+    "personality": {
+      "baseline_mood": "calm",
+      "curiosity": 0.55,
+      "attention_seeking": 0.35,
+      "talkativeness": 0.25,
+      "shyness": 0.4
+    },
+    "quiet_hours": {
+      "enabled": true,
+      "start": "23:30",
+      "end": "09:00"
+    },
+    "behavior_cooldowns": {
+      "attention_ping_seconds": 1800,
+      "curious_scan_seconds": 90,
+      "idle_presence_seconds": 45,
+      "react_to_sound_seconds": 20,
+      "wake_response_seconds": 8,
+      "request_charge_seconds": 900
+    }
+  }
+}

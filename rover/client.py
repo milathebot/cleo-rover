@@ -70,6 +70,9 @@ def main(argv: list[str] | None = None) -> int:
     presence.add_argument("--no-glance", action="store_true")
     presence.add_argument("--snapshot", action="store_true")
 
+    safe_mode = sub.add_parser("safe-mode")
+    safe_mode.add_argument("--amber", action="store_true", help="Leave amber safety LEDs on instead of turning LEDs off")
+
     drive = sub.add_parser("drive")
     drive.add_argument("--linear", type=float, default=0.0)
     drive.add_argument("--turn", type=float, default=0.0)
@@ -111,6 +114,20 @@ def main(argv: list[str] | None = None) -> int:
         result = run_dance(lambda method, path, payload=None: request(args.base, method, path, payload), lifted=args.lifted, no_motors=args.no_motors, intensity=args.intensity)
     elif args.cmd == "presence-tick":
         result = run_presence_tick(lambda method, path, payload=None: request(args.base, method, path, payload), glance=not args.no_glance, snapshot=args.snapshot)
+    elif args.cmd == "safe-mode":
+        request(args.base, "POST", "/stop")
+        request(args.base, "POST", "/turret", {"pan_deg": 0})
+        rgb = rgb_payload("low_battery" if args.amber else "off")
+        rgb_result = request(args.base, "POST", "/rgb", rgb)
+        status = request(args.base, "GET", "/status")
+        result = {
+            "ok": True,
+            "stopped": True,
+            "turret": {"pan_deg": 0},
+            "rgb": rgb_result,
+            "status": status,
+            "note": "For unattended powered-on presence, run the service with config/rover.hardware.presence.json so motors_armed stays false.",
+        }
     elif args.cmd == "stop":
         result = request(args.base, "POST", "/stop")
     elif args.cmd == "drive":

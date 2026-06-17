@@ -34,12 +34,12 @@ class RoverBody:
         self.config = config or RoverConfig()
         self.state = SimState()
         self._stop_task: asyncio.Task | None = None
-        self.hardware_ready = mode == "hardware" and not self.config.safety.bench_safe_no_motors
         self.display_ready = mode == "hardware"
-        self.motors_armed = self.hardware_ready
         self.hardware: FreenoveHardware | None = None
-        if self.hardware_ready and self.config.motors.driver == "freenove-pca9685-4wd":
+        if mode == "hardware" and self.config.motors.driver == "freenove-pca9685-4wd":
             self.hardware = FreenoveHardware(self.config)
+        self.hardware_ready = mode == "hardware" and self.hardware is not None
+        self.motors_armed = self.hardware_ready and not self.config.safety.bench_safe_no_motors
 
     async def drive(self, command: DriveCommand) -> None:
         safe_duration = min(command.duration_ms, self.config.safety.max_drive_duration_ms)
