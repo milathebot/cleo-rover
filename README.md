@@ -180,6 +180,17 @@ This stores observations in SQLite with zone, bearing, distance, confidence, not
 
 Autonomy can request tiny movement, but the body refuses real movement unless movement is explicitly allowed and motors are armed. The default config remains bench-safe.
 
+## Hardware status
+
+Current verified bench state:
+
+- Raspberry Pi 4 boots from the Freenove car board through the GPIO/header when the 18650 battery pack is installed; USB-C power is not needed during car-board operation.
+- I2C/SPI are enabled on the Pi.
+- Freenove board I2C scan shows `0x40` for PCA9685 motor/servo PWM, `0x48` for the board ADC/power-sense device, and `0x70` for the PCA9685 all-call address.
+- Pan/tilt servo channels `8/9` centered correctly at `1500us`.
+- Motor channel mapping is verified against the physical wheels. Low-power hardware mode drives all four wheels forward/back smoothly and can turn left/right.
+- First safe hardware config used `max_duty_cycle: 0.18`, `max_drive_duration_ms: 500`, and wheels lifted for initial testing.
+
 ## Hardware config
 
 Default hardware assumptions live in:
