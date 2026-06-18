@@ -30,6 +30,7 @@ SAFE_PREFIX_COMMANDS = {"map-scan", "visual-map-scan", "look-remember", "rgb-mod
 DANGEROUS_COMMANDS = {"drive", "move-step", "rotate-step", "movement-grant", "map-floor", "dance"}
 ARM_STATE_FILE = "data/telegram_floor_arm.json"
 FLOOR_MODE_STATE_FILE = "data/telegram_floor_mode.json"
+OFFSET_STATE_FILE = "data/telegram_agent_offset.json"
 PROFILE_SWITCH_SCRIPT = "scripts/set_rover_profile.sh"
 
 
@@ -62,6 +63,10 @@ def arm_state_path(config: AgentConfig) -> Path:
 
 def floor_mode_state_path(config: AgentConfig) -> Path:
     return Path(config.workdir) / FLOOR_MODE_STATE_FILE
+
+
+def offset_state_path(config: AgentConfig) -> Path:
+    return Path(config.workdir) / OFFSET_STATE_FILE
 
 
 def _load_json_file(path: Path) -> dict[str, Any] | None:
@@ -396,16 +401,40 @@ def handle_message(api: TelegramAPI, config: AgentConfig, message: dict[str, Any
         api.send_message(chat_id, f"FAILED: {exc!r}")
 
 
+def load_saved_offset(config: AgentConfig) -> int | None:
+    state = _load_json_file(offset_state_path(config))
+    if not state:
+        return None
+    value = state.get("offset")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def save_offset(config: AgentConfig, offset: int) -> None:
+    _save_json_file(offset_state_path(config), {"offset": offset, "saved_at": time.time()})
+
+
 def loop(config: AgentConfig) -> int:
     api = TelegramAPI(config.token)
     me = api.call("getMe")
     print(json.dumps({"ok": True, "bot": me.get("result", {}).get("username"), "dry_run": config.dry_run}), flush=True)
-    offset: int | None = None
+    offset: int | None = load_saved_offset(config)
+    if offset is not None:
+        print(json.dumps({"ok": True, "event": "resume_offset", "offset": offset}), flush=True)
     while True:
         try:
             updates = api.get_updates(offset, config.poll_timeout)
             for update in updates:
-                offset = int(update["update_id"]) + 1
+                next_offset = int(update["update_id"]) + 1
+                # Persist the next offset before executing commands. If systemd restarts this
+                # agent mid-command, Telegram will not replay the same profile-switch command
+                # forever on the next start.
+                save_offset(config, next_offset)
+                offset = next_offset
                 message = update.get("message") or update.get("edited_message")
                 if message and message.get("text"):
                     handle_message(api, config, message)

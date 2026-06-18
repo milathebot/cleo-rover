@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from rover.telegram_agent import AgentConfig, active_floor_arm, build_floor_map_run, handle_floor_arm, handle_floor_mode, parse_rover_command, profile_switch_argv
+from rover.telegram_agent import AgentConfig, active_floor_arm, build_floor_map_run, handle_floor_arm, handle_floor_mode, load_saved_offset, parse_rover_command, profile_switch_argv, save_offset
 
 
 def test_parse_safe_status_command():

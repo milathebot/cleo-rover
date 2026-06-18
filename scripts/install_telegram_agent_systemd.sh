@@ -29,7 +29,6 @@ cat > "$SERVICE" <<EOF
 Description=Cleo Rover Telegram command agent
 After=network-online.target cleo-rover.service
 Wants=network-online.target
-Requires=cleo-rover.service
 
 [Service]
 Type=simple
