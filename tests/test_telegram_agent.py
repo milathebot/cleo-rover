@@ -15,6 +15,27 @@ def test_parse_parameterized_map_scan():
     assert argv == ["cleo-rover", "map-scan", "--zone", "office", "--angles=-25,0,25"]
 
 
+def test_parse_floor_precheck_and_estop():
+    argv, error = parse_rover_command("/rover floor-precheck --zone living-room")
+    assert error is None
+    assert argv == ["cleo-rover", "floor-precheck", "--zone", "living-room"]
+
+    argv, error = parse_rover_command("/rover estop")
+    assert error is None
+    assert argv == ["cleo-rover", "safe-mode", "--amber"]
+
+
+def test_parse_floor_map_dry_run_allowed_but_map_floor_blocked():
+    argv, error = parse_rover_command("/rover floor-map-dry-run --zone living-room --steps 2")
+    assert error is None
+    assert argv == ["cleo-rover", "floor-map-dry-run", "--zone", "living-room", "--steps", "2"]
+
+    argv, error = parse_rover_command("/rover map-floor --zone living-room --allow-movement")
+    assert argv is None
+    assert error is not None
+    assert "Refusing" in error
+
+
 def test_blocks_movement_commands():
     argv, error = parse_rover_command("/rover drive --linear 1")
     assert argv is None

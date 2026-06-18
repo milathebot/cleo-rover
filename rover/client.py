@@ -43,6 +43,13 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("autonomy")
     sub.add_parser("tick")
     sub.add_parser("map")
+    floor_precheck = sub.add_parser("floor-precheck")
+    floor_precheck.add_argument("--zone", default="floor")
+    floor_precheck.add_argument("--angles", default="-30,0,30")
+
+    floor_map_dry_run = sub.add_parser("floor-map-dry-run")
+    floor_map_dry_run.add_argument("--zone", default="floor")
+    floor_map_dry_run.add_argument("--steps", type=int, default=3)
     sub.add_parser("movement-status")
     sub.add_parser("movement-revoke")
 
@@ -141,6 +148,29 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "GET", "/events/recent")
     elif args.cmd == "map":
         result = request(args.base, "GET", "/map")
+    elif args.cmd == "floor-precheck":
+        angles = [float(part.strip()) for part in args.angles.split(",") if part.strip()]
+        safe = request(args.base, "POST", "/stop")
+        status_now = request(args.base, "GET", "/status")
+        sensors_now = request(args.base, "GET", "/sensors")
+        movement = request(args.base, "GET", "/movement/status")
+        scan = request(args.base, "POST", "/map/scan", {"zone": args.zone, "angles": angles, "settle_ms": 250, "snapshot_center": False}, timeout=max(10.0, 3.0 + len(angles) * 2.0))
+        front = sensors_now.get("front_distance_cm")
+        clear = front is None or float(front) >= max(45.0, float(sensors_now.get("front_stop_distance_cm") or 18.0) + 20.0)
+        result = {
+            "ok": True,
+            "zone": args.zone,
+            "safe_stop": safe,
+            "status": status_now,
+            "sensors": sensors_now,
+            "movement": movement,
+            "scan": scan,
+            "floor_ready_without_motor_test": bool(status_now.get("hardware_ready") and sensors_now.get("ultrasonic_ready") and sensors_now.get("camera", {}).get("ready")),
+            "front_clear_for_tiny_step": clear,
+            "note": "Precheck does not arm motors. Telegram floor driving remains blocked until explicit movement safety is enabled separately.",
+        }
+    elif args.cmd == "floor-map-dry-run":
+        result = request(args.base, "POST", "/tasks/map-floor", {"zone": args.zone, "allow_movement": False, "steps": args.steps, "notes": "Telegram dry-run floor map"}, timeout=max(30.0, 10.0 + args.steps * 8.0))
     elif args.cmd == "autonomy":
         result = request(args.base, "GET", "/autonomy/state")
     elif args.cmd == "tick":

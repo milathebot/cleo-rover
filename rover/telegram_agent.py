@@ -16,13 +16,15 @@ SAFE_COMMANDS: dict[str, list[str]] = {
     "status": ["cleo-rover", "status"],
     "sensors": ["cleo-rover", "sensors"],
     "safe-mode": ["cleo-rover", "safe-mode"],
+    "stop": ["cleo-rover", "safe-mode", "--amber"],
+    "estop": ["cleo-rover", "safe-mode", "--amber"],
     "map": ["cleo-rover", "map"],
     "movement-status": ["cleo-rover", "movement-status"],
     "presence-tick": ["cleo-rover", "presence-tick", "--cleanup"],
     "snapshot": ["cleo-rover", "snapshot"],
 }
 
-SAFE_PREFIX_COMMANDS = {"map-scan", "visual-map-scan", "look-remember", "rgb-mode"}
+SAFE_PREFIX_COMMANDS = {"map-scan", "visual-map-scan", "look-remember", "rgb-mode", "floor-precheck", "floor-map-dry-run"}
 DANGEROUS_COMMANDS = {"drive", "move-step", "rotate-step", "movement-grant", "map-floor", "dance"}
 
 
@@ -103,7 +105,10 @@ def help_text() -> str:
         "  /rover status\n"
         "  /rover sensors\n"
         "  /rover safe-mode\n"
+        "  /rover estop\n"
         "  /rover map\n"
+        "  /rover floor-precheck --zone living-room\n"
+        "  /rover floor-map-dry-run --zone living-room\n"
         "  /rover map-scan --zone office --angles=-25,0,25\n"
         "  /rover visual-map-scan --zone office --angles=-25,0,25\n"
         "  /rover look-remember --zone office --pan 0\n"
