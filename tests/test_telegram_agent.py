@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from rover.telegram_agent import AgentConfig, active_floor_arm, build_floor_map_run, handle_floor_arm, parse_rover_command
+from rover.telegram_agent import AgentConfig, active_floor_arm, build_floor_map_run, handle_floor_arm, handle_floor_mode, parse_rover_command, profile_switch_argv
 
 
 def test_parse_safe_status_command():
@@ -25,6 +25,18 @@ def test_parse_floor_precheck_and_estop():
     argv, error = parse_rover_command("/rover estop")
     assert error is None
     assert argv == ["cleo-rover", "safe-mode"]
+
+
+def test_floor_mode_request_and_switch_argv(tmp_path):
+    config = AgentConfig(token="t", allowed_user_id=1, workdir=str(tmp_path))
+    response = handle_floor_mode("/rover floor-mode request", config)
+    assert response is not None
+    code_match = re.search(r"confirm (\d{6})", response)
+    assert code_match is not None
+    assert profile_switch_argv(config, "floor-cautious") == ["sudo", str(tmp_path / "scripts/set_rover_profile.sh"), "floor-cautious"]
+
+    wrong = handle_floor_mode("/rover floor-mode confirm 000000", config)
+    assert wrong is not None and "Wrong" in wrong
 
 
 def test_floor_arm_request_confirm_and_map_run(tmp_path):

@@ -29,6 +29,8 @@ SAFE_COMMANDS: dict[str, list[str]] = {
 SAFE_PREFIX_COMMANDS = {"map-scan", "visual-map-scan", "look-remember", "rgb-mode", "floor-precheck", "floor-map-dry-run"}
 DANGEROUS_COMMANDS = {"drive", "move-step", "rotate-step", "movement-grant", "map-floor", "dance"}
 ARM_STATE_FILE = "data/telegram_floor_arm.json"
+FLOOR_MODE_STATE_FILE = "data/telegram_floor_mode.json"
+PROFILE_SWITCH_SCRIPT = "scripts/set_rover_profile.sh"
 
 
 @dataclass
@@ -58,8 +60,11 @@ def arm_state_path(config: AgentConfig) -> Path:
     return Path(config.workdir) / ARM_STATE_FILE
 
 
-def load_arm_state(config: AgentConfig) -> dict[str, Any] | None:
-    path = arm_state_path(config)
+def floor_mode_state_path(config: AgentConfig) -> Path:
+    return Path(config.workdir) / FLOOR_MODE_STATE_FILE
+
+
+def _load_json_file(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
@@ -68,10 +73,17 @@ def load_arm_state(config: AgentConfig) -> dict[str, Any] | None:
         return None
 
 
-def save_arm_state(config: AgentConfig, state: dict[str, Any]) -> None:
-    path = arm_state_path(config)
+def _save_json_file(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, sort_keys=True))
+
+
+def load_arm_state(config: AgentConfig) -> dict[str, Any] | None:
+    return _load_json_file(arm_state_path(config))
+
+
+def save_arm_state(config: AgentConfig, state: dict[str, Any]) -> None:
+    _save_json_file(arm_state_path(config), state)
 
 
 def clear_arm_state(config: AgentConfig) -> None:
@@ -158,6 +170,10 @@ def help_text() -> str:
         "  /rover floor-arm confirm CODE\n"
         "  /rover floor-arm status\n"
         "  /rover floor-arm cancel\n"
+        "  /rover floor-mode request\n"
+        "  /rover floor-mode confirm CODE\n"
+        "  /rover floor-mode presence\n"
+        "  /rover floor-mode status\n"
         "  /rover floor-map-run --zone living-room --steps 1  (requires active floor-arm)\n"
         "  /rover map-scan --zone office --angles=-25,0,25\n"
         "  /rover visual-map-scan --zone office --angles=-25,0,25\n"
@@ -185,6 +201,70 @@ def run_command(argv: list[str], config: AgentConfig) -> tuple[int, str]:
         check=False,
     )
     return proc.returncode, proc.stdout.strip()
+
+
+def profile_switch_argv(config: AgentConfig, profile: str) -> list[str]:
+    return ["sudo", str(Path(config.workdir) / PROFILE_SWITCH_SCRIPT), profile]
+
+
+def handle_floor_mode(text: str, config: AgentConfig) -> str | None:
+    parsed = rover_text(text)
+    if not parsed:
+        return None
+    parts = shlex.split(parsed)
+    if not parts or parts[0] != "floor-mode":
+        return None
+    action = parts[1] if len(parts) > 1 else "status"
+    if action == "request":
+        code = f"{secrets.randbelow(900000) + 100000}"
+        state = {"requested_at": time.time(), "expires_at": time.time() + 300, "code": code}
+        _save_json_file(floor_mode_state_path(config), state)
+        return (
+            "Floor-cautious motor profile switch requested.\n"
+            "Before confirming: rover is on floor, clear open area, cats/feet/cables clear, you are ready to use /rover estop.\n"
+            f"Confirm within 5 min with: /rover floor-mode confirm {code}\n"
+            "Return to safe no-motor presence mode anytime with: /rover floor-mode presence"
+        )
+    if action == "confirm":
+        state = _load_json_file(floor_mode_state_path(config))
+        if not state:
+            return "No pending floor-mode request. Run /rover floor-mode request first."
+        if float(state.get("expires_at", 0)) <= time.time():
+            floor_mode_state_path(config).unlink(missing_ok=True)
+            return "Floor-mode request expired. Run /rover floor-mode request again."
+        provided = parts[2] if len(parts) > 2 else ""
+        if provided != str(state.get("code")):
+            return "Wrong confirmation code. Staying in current profile."
+        clear_arm_state(config)
+        code, output = run_command(profile_switch_argv(config, "floor-cautious"), config)
+        if code != 0:
+            return (
+                "FAILED to switch to floor-cautious profile.\n"
+                f"{output}\n\n"
+                "Install the sudoers helper once on the Pi: sudo scripts/install_profile_switch_sudoers.sh"
+            )
+        floor_mode_state_path(config).unlink(missing_ok=True)
+        return "Switched to hardware-floor-cautious. Run /rover floor-precheck, then /rover floor-arm request before movement.\n" + output
+    if action in {"presence", "safe", "off", "cancel"}:
+        clear_arm_state(config)
+        floor_mode_state_path(config).unlink(missing_ok=True)
+        code, output = run_command(profile_switch_argv(config, "presence"), config)
+        if code != 0:
+            return (
+                "FAILED to switch to no-motor presence profile.\n"
+                f"{output}\n\n"
+                "Install the sudoers helper once on the Pi: sudo scripts/install_profile_switch_sudoers.sh"
+            )
+        return "Switched to hardware-presence-no-motors.\n" + output
+    if action == "status":
+        state = _load_json_file(floor_mode_state_path(config))
+        pending = ""
+        if state and float(state.get("expires_at", 0)) > time.time():
+            pending = f"\nPending floor-mode confirmation for {max(0, int(float(state['expires_at']) - time.time()))}s."
+        code, output = run_command(["cleo-rover", "status"], config)
+        prefix = "Current rover status:" if code == 0 else "Could not read rover status:"
+        return f"{prefix}\n{output}{pending}"
+    return "Usage: /rover floor-mode request | confirm CODE | presence | status"
 
 
 def handle_floor_arm(text: str, config: AgentConfig) -> str | None:
@@ -269,6 +349,11 @@ def handle_message(api: TelegramAPI, config: AgentConfig, message: dict[str, Any
     if user_id != config.allowed_user_id:
         api.send_message(chat_id, "Unauthorized rover command sender.")
         print(json.dumps({"ok": False, "event": "unauthorized", "user_id": user_id}), flush=True)
+        return
+
+    floor_mode_response = handle_floor_mode(text, config)
+    if floor_mode_response is not None:
+        api.send_message(chat_id, floor_mode_response)
         return
 
     arm_response = handle_floor_arm(text, config)

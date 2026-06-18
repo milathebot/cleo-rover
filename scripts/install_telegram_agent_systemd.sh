@@ -49,5 +49,6 @@ systemctl enable cleo-rover-telegram-agent.service
 
 echo "Installed cleo-rover-telegram-agent.service."
 echo "Edit credentials: sudo nano $ENV_FILE"
+echo "Optional floor profile switching helper: sudo scripts/install_profile_switch_sudoers.sh"
 echo "Start: sudo systemctl start cleo-rover-telegram-agent"
 echo "Logs: journalctl -u cleo-rover-telegram-agent -f"
