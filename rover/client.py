@@ -12,7 +12,7 @@ from .choreo import RGB_MODES, rgb_payload, run_dance, run_presence_tick
 DEFAULT_BASE = "http://127.0.0.1:8099"
 
 
-def request(base: str, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def request(base: str, method: str, path: str, payload: dict[str, Any] | None = None, timeout: float = 5) -> dict[str, Any]:
     data = None if payload is None else json.dumps(payload).encode()
     req = urllib.request.Request(
         base.rstrip("/") + path,
@@ -21,7 +21,7 @@ def request(base: str, method: str, path: str, payload: dict[str, Any] | None = 
         headers={"content-type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("events")
     sub.add_parser("autonomy")
     sub.add_parser("tick")
+    sub.add_parser("map")
     sub.add_parser("movement-status")
     sub.add_parser("movement-revoke")
 
@@ -118,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "GET", "/sensors")
     elif args.cmd == "events":
         result = request(args.base, "GET", "/events/recent")
+    elif args.cmd == "map":
+        result = request(args.base, "GET", "/map")
     elif args.cmd == "autonomy":
         result = request(args.base, "GET", "/autonomy/state")
     elif args.cmd == "tick":
@@ -139,7 +142,8 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "POST", "/tasks/map-floor", {"zone": args.zone, "allow_movement": args.allow_movement, "notes": args.notes})
     elif args.cmd == "map-scan":
         angles = [float(part.strip()) for part in args.angles.split(",") if part.strip()]
-        result = request(args.base, "POST", "/map/scan", {"zone": args.zone, "angles": angles, "settle_ms": args.settle_ms, "snapshot_center": args.snapshot_center})
+        timeout = max(10.0, 3.0 + len(angles) * (args.settle_ms / 1000 + 1.5))
+        result = request(args.base, "POST", "/map/scan", {"zone": args.zone, "angles": angles, "settle_ms": args.settle_ms, "snapshot_center": args.snapshot_center}, timeout=timeout)
     elif args.cmd == "event":
         result = request(args.base, "POST", "/events", {"kind": args.kind, "source": args.source, "label": args.label, "value": args.value})
     elif args.cmd == "hear":
