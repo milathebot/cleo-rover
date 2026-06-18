@@ -15,6 +15,7 @@ import urllib.request
 from typing import Any
 
 from rover.choreo import run_presence_tick
+from rover.choreo import rgb_payload
 
 DEFAULT_BASE = "http://127.0.0.1:8099"
 
@@ -39,12 +40,19 @@ def main() -> int:
     parser.add_argument("--base", default=DEFAULT_BASE)
     parser.add_argument("--no-glance", action="store_true")
     parser.add_argument("--snapshot", action="store_true")
+    parser.add_argument("--cleanup", action="store_true", help="Turn RGB off and center turret after this one-shot tick")
     args = parser.parse_args()
     result = run_presence_tick(
         lambda method, path, payload=None: request(args.base, method, path, payload),
         glance=not args.no_glance,
         snapshot=args.snapshot,
     )
+    if args.cleanup:
+        request(args.base, "POST", "/turret", {"pan_deg": 0})
+        result["cleanup"] = {
+            "turret": {"pan_deg": 0},
+            "rgb": request(args.base, "POST", "/rgb", rgb_payload("off")),
+        }
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result.get("ok") else 1
 

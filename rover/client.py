@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     presence = sub.add_parser("presence-tick")
     presence.add_argument("--no-glance", action="store_true")
     presence.add_argument("--snapshot", action="store_true")
+    presence.add_argument("--cleanup", action="store_true", help="Turn RGB off and center turret after this one-shot tick")
 
     safe_mode = sub.add_parser("safe-mode")
     safe_mode.add_argument("--amber", action="store_true", help="Leave amber safety LEDs on instead of turning LEDs off")
@@ -114,6 +115,10 @@ def main(argv: list[str] | None = None) -> int:
         result = run_dance(lambda method, path, payload=None: request(args.base, method, path, payload), lifted=args.lifted, no_motors=args.no_motors, intensity=args.intensity)
     elif args.cmd == "presence-tick":
         result = run_presence_tick(lambda method, path, payload=None: request(args.base, method, path, payload), glance=not args.no_glance, snapshot=args.snapshot)
+        if args.cleanup:
+            request(args.base, "POST", "/turret", {"pan_deg": 0})
+            cleanup_rgb = request(args.base, "POST", "/rgb", rgb_payload("off"))
+            result["cleanup"] = {"turret": {"pan_deg": 0}, "rgb": cleanup_rgb}
     elif args.cmd == "safe-mode":
         request(args.base, "POST", "/stop")
         request(args.base, "POST", "/turret", {"pan_deg": 0})
