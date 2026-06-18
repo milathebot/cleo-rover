@@ -12,7 +12,7 @@ from .config import load_config
 from .drivers import RoverBody
 from .hub import fetch_hub_snapshot
 from .mapping import observation_items, scan_item
-from .models import AutonomyTickCommand, BehaviorDecision, DriveCommand, ExpressionCommand, MapFloorTaskCommand, MapScanCommand, MovementPermissionCommand, RGBCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand
+from .models import AutonomyTickCommand, BehaviorDecision, DriveCommand, ExpressionCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisualMapScanCommand
 from .peripherals import capture_camera_snapshot
 from .persistence import RoverStore
 from .renderer import render_expression
@@ -44,6 +44,43 @@ def body_status_dict() -> dict:
     return status
 
 
+def active_movement_grant() -> dict | None:
+    if movement_grant is None:
+        return None
+    if not movement_grant.get("active") or float(movement_grant.get("expires_at", 0)) <= time.time():
+        return None
+    return movement_grant
+
+
+def drive_safety(command: DriveCommand, *, require_permission: bool = False) -> tuple[bool, str, DriveCommand]:
+    if CONFIG.safety.bench_safe_no_motors:
+        return False, "drive rejected: current profile has bench_safe_no_motors=true", command
+    if not body.motors_armed:
+        return False, "drive rejected: motors are not armed", command
+    grant = active_movement_grant()
+    if require_permission and grant is None:
+        return False, "drive rejected: movement permission grant is required", command
+    if grant:
+        command = command.model_copy(update={
+            "linear": max(-float(grant.get("max_linear", 0.35)), min(float(grant.get("max_linear", 0.35)), command.linear)),
+            "turn": max(-float(grant.get("max_turn", 0.7)), min(float(grant.get("max_turn", 0.7)), command.turn)),
+        })
+    sensors_now = body.sensors()
+    distance = sensors_now.get("front_distance_cm")
+    if command.linear > 0 and distance is not None and float(distance) < CONFIG.safety.front_stop_distance_cm:
+        return False, f"drive rejected: obstacle at {distance}cm is closer than stop threshold {CONFIG.safety.front_stop_distance_cm}cm", command
+    return True, "drive allowed", command
+
+
+async def guarded_drive(command: DriveCommand, *, require_permission: bool = False) -> dict:
+    ok, reason, safe_command = drive_safety(command, require_permission=require_permission)
+    if not ok:
+        await body.stop()
+        return {"ok": False, "stopped": True, "reason": reason, "command": command.model_dump()}
+    await body.drive(safe_command)
+    return {"ok": True, "stopped": body.state.stopped, "reason": reason, "command": safe_command.model_dump(), "movement": active_movement_grant()}
+
+
 async def apply_decision(decision: BehaviorDecision) -> dict:
     applied = []
     if decision.stop:
@@ -56,8 +93,8 @@ async def apply_decision(decision: BehaviorDecision) -> dict:
         await body.set_turret(decision.turret)
         applied.append("turret")
     if decision.drive:
-        await body.drive(decision.drive)
-        applied.append("drive")
+        drive_result = await guarded_drive(decision.drive, require_permission=True)
+        applied.append("drive" if drive_result.get("ok") else "drive_rejected")
     # Speech is intentionally a command payload only until speaker playback is wired.
     if decision.speech:
         applied.append("speech_stub")
@@ -108,8 +145,7 @@ def config() -> dict:
 
 @app.post("/drive")
 async def drive(command: DriveCommand) -> dict:
-    await body.drive(command)
-    return {"ok": True, "stopped": body.state.stopped, "command": command.model_dump()}
+    return await guarded_drive(command, require_permission=False)
 
 
 @app.post("/stop")
@@ -294,6 +330,51 @@ async def map_scan(command: MapScanCommand) -> dict:
     return {"ok": True, "zone": command.zone, "observations": observations, "capture": capture}
 
 
+@app.post("/map/visual-scan")
+async def visual_map_scan(command: VisualMapScanCommand) -> dict:
+    observations = []
+    for angle in command.angles:
+        clamped = max(CONFIG.turret.pan_min_deg, min(CONFIG.turret.pan_max_deg, float(angle)))
+        await body.set_turret(TurretCommand(pan_deg=clamped))
+        await asyncio.sleep(command.settle_ms / 1000)
+        sensors_now = body.sensors()
+        distance_cm = sensors_now.get("front_distance_cm")
+        capture = capture_camera_snapshot(CONFIG.camera.capture_dir, width=CONFIG.camera.width, height=CONFIG.camera.height) if body.mode == "hardware" and command.capture_each_angle else None
+        item = scan_item(command.zone, clamped, distance_cm, payload={"sensors": sensors_now, "capture": capture})
+        saved_item = store.upsert_spatial(item)
+        event = store.add_event(
+            RoverEvent(
+                kind=RoverEventKind.map_observation,
+                source="visual_map_scan",
+                label=f"{command.zone} visual {clamped:+.1f} deg",
+                value=distance_cm,
+                payload={"zone": command.zone, "bearing_deg": clamped, "distance_cm": distance_cm, "sensors": sensors_now, "capture": capture, "needs_external_vision": True},
+            )
+        )
+        events.add(event)
+        observations.append({"event": event.model_dump(), "item": saved_item.model_dump(), "capture": capture})
+    await body.set_turret(TurretCommand(pan_deg=0))
+    return {"ok": True, "zone": command.zone, "observations": observations, "needs_external_vision": True}
+
+
+@app.post("/movement/move-step")
+async def move_step(command: MoveStepCommand) -> dict:
+    linear = 0.28 if command.forward_cm >= 0 else -0.25
+    duration = int(min(500, max(180, abs(command.forward_cm) * 28)))
+    result = await guarded_drive(DriveCommand(linear=linear, turn=0, duration_ms=duration), require_permission=command.require_permission)
+    result["step"] = command.model_dump()
+    return result
+
+
+@app.post("/movement/rotate-step")
+async def rotate_step(command: RotateStepCommand) -> dict:
+    turn = 0.45 if command.deg >= 0 else -0.45
+    duration = int(min(550, max(180, abs(command.deg) * 14)))
+    result = await guarded_drive(DriveCommand(linear=0, turn=turn, duration_ms=duration), require_permission=command.require_permission)
+    result["step"] = command.model_dump()
+    return result
+
+
 @app.post("/movement/grant")
 def grant_movement(command: MovementPermissionCommand) -> dict:
     global movement_grant
@@ -319,29 +400,44 @@ def movement_status() -> dict:
 
 
 @app.post("/tasks/map-floor")
-def map_floor_task(command: MapFloorTaskCommand) -> dict:
-    # This creates a permissioned mapping task record. It does not drive yet;
-    # autonomous wheel motion will be added only behind /movement/grant.
+async def map_floor_task(command: MapFloorTaskCommand) -> dict:
+    global movement_grant
     grant = MovementPermissionCommand(
         task=f"map-floor:{command.zone}",
         allow_movement=command.allow_movement,
         duration_seconds=600,
         max_linear=0.25,
         max_turn=0.45,
-        notes=command.notes or "Permissioned floor mapping task scaffold",
+        notes=command.notes or "Conservative floor mapping task",
     )
     expires_at = time.time() + grant.duration_seconds
-    task_payload = grant.model_dump() | {"expires_at": expires_at, "active": grant.allow_movement, "zone": command.zone}
-    event = store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="map_floor_task", label=grant.task, payload=task_payload))
+    movement_grant = grant.model_dump() | {"expires_at": expires_at, "active": grant.allow_movement}
+    event = store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="map_floor_task", label=grant.task, payload=movement_grant | {"zone": command.zone}))
     events.add(event)
+    plan: list[dict] = []
+    initial_scan = await map_scan(MapScanCommand(zone=command.zone, angles=[-45, -20, 0, 20, 45], settle_ms=200))
+    plan.append({"kind": "scan", "result": initial_scan})
+    if command.allow_movement:
+        for step in range(command.steps):
+            sensors_now = body.sensors()
+            distance = sensors_now.get("front_distance_cm")
+            if distance is not None and float(distance) < max(45.0, CONFIG.safety.front_stop_distance_cm + 20):
+                plan.append({"kind": "halt", "reason": f"front distance {distance}cm is too close for floor mapping step", "sensors": sensors_now})
+                break
+            move = await move_step(MoveStepCommand(forward_cm=8, require_permission=True))
+            plan.append({"kind": "move-step", "step": step + 1, "result": move})
+            await asyncio.sleep(0.3)
+            scan = await map_scan(MapScanCommand(zone=command.zone, angles=[-30, 0, 30], settle_ms=200))
+            plan.append({"kind": "scan", "step": step + 1, "result": scan})
+            if not move.get("ok"):
+                break
+    await body.stop()
     return {
         "ok": True,
-        "task": task_payload,
-        "next_steps": [
-            "Run /map/scan for non-driving range+camera observations.",
-            "Only enable wheel motion after explicit /movement/grant and floor-safe testing.",
-        ],
+        "task": movement_grant | {"zone": command.zone, "steps": command.steps},
+        "plan": plan,
         "event": event.model_dump(),
+        "safety": "Conservative floor mapping only moves if allow_movement=true, an active grant exists, motors are armed, and front range is clear.",
     }
 
 

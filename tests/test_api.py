@@ -116,11 +116,30 @@ def test_movement_permission_and_map_floor_are_permissioned():
     task = client.post("/tasks/map-floor", json={"zone": "office", "allow_movement": False})
     assert task.status_code == 200
     assert task.json()["task"]["active"] is False
-    assert "Only enable wheel motion" in task.json()["next_steps"][1]
+    assert "Conservative floor mapping" in task.json()["safety"]
+    assert task.json()["plan"][0]["kind"] == "scan"
 
     revoked = client.post("/movement/revoke")
     assert revoked.status_code == 200
     assert revoked.json()["stopped"] is True
+
+
+def test_drive_rejected_in_no_motor_profile_and_step_requires_permission():
+    drive = client.post("/drive", json={"linear": 0.2, "turn": 0, "duration_ms": 100})
+    assert drive.status_code == 200
+    assert drive.json()["ok"] is False
+    assert "bench_safe_no_motors" in drive.json()["reason"]
+
+    step = client.post("/movement/move-step", json={"forward_cm": 8, "require_permission": True})
+    assert step.status_code == 200
+    assert step.json()["ok"] is False
+
+
+def test_visual_map_scan_and_look_remember_paths():
+    scan = client.post("/map/visual-scan", json={"zone": "office", "angles": [0], "settle_ms": 50, "capture_each_angle": False})
+    assert scan.status_code == 200
+    assert scan.json()["needs_external_vision"] is True
+    assert scan.json()["observations"][0]["event"]["payload"]["needs_external_vision"] is True
 
 
 def test_expression_and_status():

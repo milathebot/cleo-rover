@@ -52,6 +52,12 @@ def main(argv: list[str] | None = None) -> int:
     map_scan.add_argument("--settle-ms", type=int, default=250)
     map_scan.add_argument("--snapshot-center", action="store_true")
 
+    visual_map_scan = sub.add_parser("visual-map-scan")
+    visual_map_scan.add_argument("--zone", default="unknown")
+    visual_map_scan.add_argument("--angles", default="-45,-25,0,25,45", help="Comma-separated turret pan angles")
+    visual_map_scan.add_argument("--settle-ms", type=int, default=300)
+    visual_map_scan.add_argument("--no-capture-each-angle", action="store_true")
+
     movement_grant = sub.add_parser("movement-grant")
     movement_grant.add_argument("task")
     movement_grant.add_argument("--allow-movement", action="store_true")
@@ -63,7 +69,21 @@ def main(argv: list[str] | None = None) -> int:
     map_floor = sub.add_parser("map-floor")
     map_floor.add_argument("--zone", default="floor")
     map_floor.add_argument("--allow-movement", action="store_true")
+    map_floor.add_argument("--steps", type=int, default=3)
     map_floor.add_argument("--notes", default=None)
+
+    move_step = sub.add_parser("move-step")
+    move_step.add_argument("--forward-cm", type=float, default=10.0)
+    move_step.add_argument("--no-permission-required", action="store_true")
+
+    rotate_step = sub.add_parser("rotate-step")
+    rotate_step.add_argument("--deg", type=float, default=15.0)
+    rotate_step.add_argument("--no-permission-required", action="store_true")
+
+    look_remember = sub.add_parser("look-remember")
+    look_remember.add_argument("--zone", default="unknown")
+    look_remember.add_argument("--pan", type=float, default=0.0)
+    look_remember.add_argument("--analysis-json", default=None, help="Optional JSON string to post to /vision/analysis after snapshot")
 
     event = sub.add_parser("event")
     event.add_argument("kind", choices=["sound", "speech", "wake_word", "motion", "camera_snapshot", "button", "bump", "obstacle", "battery", "network", "manual_control", "idle_tick", "vision_analysis", "map_observation", "movement_permission"])
@@ -139,11 +159,31 @@ def main(argv: list[str] | None = None) -> int:
             "notes": args.notes,
         })
     elif args.cmd == "map-floor":
-        result = request(args.base, "POST", "/tasks/map-floor", {"zone": args.zone, "allow_movement": args.allow_movement, "notes": args.notes})
+        timeout = max(30.0, 10.0 + args.steps * 12.0)
+        result = request(args.base, "POST", "/tasks/map-floor", {"zone": args.zone, "allow_movement": args.allow_movement, "steps": args.steps, "notes": args.notes}, timeout=timeout)
     elif args.cmd == "map-scan":
         angles = [float(part.strip()) for part in args.angles.split(",") if part.strip()]
         timeout = max(10.0, 3.0 + len(angles) * (args.settle_ms / 1000 + 1.5))
         result = request(args.base, "POST", "/map/scan", {"zone": args.zone, "angles": angles, "settle_ms": args.settle_ms, "snapshot_center": args.snapshot_center}, timeout=timeout)
+    elif args.cmd == "visual-map-scan":
+        angles = [float(part.strip()) for part in args.angles.split(",") if part.strip()]
+        timeout = max(30.0, 5.0 + len(angles) * (args.settle_ms / 1000 + 4.0))
+        result = request(args.base, "POST", "/map/visual-scan", {"zone": args.zone, "angles": angles, "settle_ms": args.settle_ms, "capture_each_angle": not args.no_capture_each_angle}, timeout=timeout)
+    elif args.cmd == "move-step":
+        result = request(args.base, "POST", "/movement/move-step", {"forward_cm": args.forward_cm, "require_permission": not args.no_permission_required})
+    elif args.cmd == "rotate-step":
+        result = request(args.base, "POST", "/movement/rotate-step", {"deg": args.deg, "require_permission": not args.no_permission_required})
+    elif args.cmd == "look-remember":
+        request(args.base, "POST", "/turret", {"pan_deg": args.pan})
+        snapshot = request(args.base, "POST", "/vision/snapshot", timeout=45)
+        analysis_result = None
+        if args.analysis_json:
+            analysis = json.loads(args.analysis_json)
+            analysis.setdefault("zone", args.zone)
+            if snapshot.get("capture"):
+                analysis.setdefault("snapshot_path", snapshot["capture"].get("path"))
+            analysis_result = request(args.base, "POST", "/vision/analysis", analysis, timeout=20)
+        result = {"ok": True, "zone": args.zone, "pan_deg": args.pan, "snapshot": snapshot, "analysis_result": analysis_result, "needs_external_vision": analysis_result is None}
     elif args.cmd == "event":
         result = request(args.base, "POST", "/events", {"kind": args.kind, "source": args.source, "label": args.label, "value": args.value})
     elif args.cmd == "hear":

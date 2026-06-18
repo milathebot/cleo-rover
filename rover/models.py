@@ -113,6 +113,10 @@ class MapScanCommand(BaseModel):
     snapshot_center: bool = False
 
 
+class VisualMapScanCommand(MapScanCommand):
+    capture_each_angle: bool = True
+
+
 class MovementPermissionCommand(BaseModel):
     task: str = Field(max_length=80)
     allow_movement: bool = False
@@ -125,7 +129,18 @@ class MovementPermissionCommand(BaseModel):
 class MapFloorTaskCommand(BaseModel):
     zone: str = Field(default="floor", max_length=80)
     allow_movement: bool = False
+    steps: int = Field(default=3, ge=1, le=12)
     notes: str | None = Field(default=None, max_length=240)
+
+
+class MoveStepCommand(BaseModel):
+    forward_cm: float = Field(default=10.0, ge=-30.0, le=30.0)
+    require_permission: bool = True
+
+
+class RotateStepCommand(BaseModel):
+    deg: float = Field(default=15.0, ge=-45.0, le=45.0)
+    require_permission: bool = True
 
 
 class DriveCommand(BaseModel):
