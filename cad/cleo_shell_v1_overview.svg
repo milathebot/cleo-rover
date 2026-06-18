@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="560" viewBox="0 0 900 560">
+  <style>
+    .body{fill:#1c1930;stroke:#8b7cf6;stroke-width:3}
+    .open{fill:#080712;stroke:#ff7ac8;stroke-width:3;stroke-dasharray:8 5}
+    .vent{fill:#7df9ff;opacity:.65}
+    .dim{stroke:#f4efff;stroke-width:2;marker-start:url(#a);marker-end:url(#a)}
+    .txt{fill:#f4efff;font:20px system-ui,Segoe UI,sans-serif}
+    .small{fill:#d8ccff;font:15px system-ui,Segoe UI,sans-serif}
+  </style>
+  <defs>
+    <marker id="a" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,4 L8,0 L8,8 Z" fill="#f4efff"/></marker>
+  </defs>
+
+  <text class="txt" x="40" y="42">Cleo Rover Shell v1, exact external envelope 200 × 100 × 140 mm</text>
+
+  <!-- side view -->
+  <text class="txt" x="60" y="90">Side view</text>
+  <rect class="body" x="60" y="120" width="520" height="300" rx="18"/>
+  <rect class="open" x="50" y="122" width="76" height="296"/>
+  <text class="small" x="58" y="455">front fully open for turret</text>
+  <!-- vents side lower -->
+  <g>
+    <rect class="vent" x="135" y="355" width="58" height="20" rx="4"/>
+    <rect class="vent" x="212" y="355" width="58" height="20" rx="4"/>
+    <rect class="vent" x="289" y="355" width="58" height="20" rx="4"/>
+    <rect class="vent" x="366" y="355" width="58" height="20" rx="4"/>
+    <rect class="vent" x="443" y="355" width="58" height="20" rx="4"/>
+    <rect class="vent" x="160" y="315" width="58" height="20" rx="4"/>
+    <rect class="vent" x="237" y="315" width="58" height="20" rx="4"/>
+    <rect class="vent" x="314" y="315" width="58" height="20" rx="4"/>
+    <rect class="vent" x="391" y="315" width="58" height="20" rx="4"/>
+  </g>
+  <line class="dim" x1="60" y1="460" x2="580" y2="460"/>
+  <text class="small" x="285" y="490">200 mm length</text>
+  <line class="dim" x1="610" y1="120" x2="610" y2="420"/>
+  <text class="small" x="625" y="275">140 mm height</text>
+
+  <!-- top view -->
+  <text class="txt" x="660" y="90">Top view</text>
+  <rect class="body" x="660" y="120" width="160" height="300" rx="15"/>
+  <rect class="open" x="650" y="118" width="45" height="304"/>
+  <rect x="710" y="180" width="80" height="55" rx="6" fill="none" stroke="#ffd166" stroke-width="3"/>
+  <rect x="710" y="285" width="80" height="55" rx="6" fill="none" stroke="#ffd166" stroke-width="3"/>
+  <text class="small" x="704" y="455">velcro guide pads inside roof</text>
+  <line class="dim" x1="660" y1="475" x2="820" y2="475"/>
+  <text class="small" x="703" y="505">100 mm width</text>
+</svg>
