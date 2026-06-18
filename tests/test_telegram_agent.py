@@ -22,7 +22,7 @@ def test_parse_floor_precheck_and_estop():
 
     argv, error = parse_rover_command("/rover estop")
     assert error is None
-    assert argv == ["cleo-rover", "safe-mode", "--amber"]
+    assert argv == ["cleo-rover", "safe-mode"]
 
 
 def test_parse_floor_map_dry_run_allowed_but_map_floor_blocked():
