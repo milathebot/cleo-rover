@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 
@@ -10,7 +11,8 @@ from .autonomy import AutonomyEngine, EventStore
 from .config import load_config
 from .drivers import RoverBody
 from .hub import fetch_hub_snapshot
-from .models import AutonomyTickCommand, BehaviorDecision, DriveCommand, ExpressionCommand, RGBCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand
+from .mapping import observation_items, scan_item
+from .models import AutonomyTickCommand, BehaviorDecision, DriveCommand, ExpressionCommand, MapFloorTaskCommand, MapScanCommand, MovementPermissionCommand, RGBCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand
 from .peripherals import capture_camera_snapshot
 from .persistence import RoverStore
 from .renderer import render_expression
@@ -23,6 +25,7 @@ body = RoverBody(mode=ROVER_MODE, config=CONFIG)
 events = EventStore()
 store = RoverStore(CONFIG.life_loop.data_path)
 autonomy = AutonomyEngine(CONFIG.life_loop, state=store.load_state(), cooldowns=store.load_cooldowns())
+movement_grant: dict | None = None
 
 app = FastAPI(title="Cleo Rover Mk1 Body Service", version="0.1.0")
 
@@ -182,7 +185,8 @@ def vision_snapshot(event: RoverEvent | None = None) -> dict:
     capture = None
     if body.mode == "hardware":
         capture = capture_camera_snapshot(CONFIG.camera.capture_dir, width=CONFIG.camera.width, height=CONFIG.camera.height)
-        payload = {"simulated": False, "capture": capture}
+        sensors_now = body.sensors()
+        payload = {"simulated": False, "capture": capture, "sensors": sensors_now, "turret": body.state.turret.model_dump()}
         label = "snapshot" if capture.get("ok") else "snapshot failed"
         event = RoverEvent(kind=RoverEventKind.camera_snapshot, source="camera", label=label, payload=payload)
     else:
@@ -196,6 +200,8 @@ def vision_snapshot(event: RoverEvent | None = None) -> dict:
         "ok": bool(capture.get("ok", True)) if capture is not None else True,
         "event": saved.model_dump(),
         "capture": capture,
+        "sensors": saved.payload.get("sensors"),
+        "turret": saved.payload.get("turret"),
         "analysis_stub": {
             "person_seen": bool(saved.payload.get("person_seen", False)),
             "motion_seen": saved.kind == RoverEventKind.motion or bool(saved.payload.get("motion_seen", False)),
@@ -203,6 +209,21 @@ def vision_snapshot(event: RoverEvent | None = None) -> dict:
         },
         "state": autonomy.state.model_dump(),
     }
+
+
+@app.post("/vision/analysis")
+def vision_analysis(command: VisionAnalysisCommand) -> dict:
+    sensors_now = body.sensors()
+    distance_cm = sensors_now.get("front_distance_cm")
+    bearing = body.state.turret.pan_deg
+    payload = command.model_dump()
+    payload.update({"sensors": sensors_now, "bearing_deg": bearing})
+    saved = store.add_event(RoverEvent(kind=RoverEventKind.vision_analysis, source=command.source, label="vision analysis", payload=payload))
+    events.add(saved)
+    autonomy.update_from_event(saved)
+    items = observation_items(zone=command.zone, bearing_deg=bearing, distance_cm=distance_cm, analysis=command.model_dump())
+    stored = [store.upsert_spatial(item) for item in items]
+    return {"ok": True, "event": saved.model_dump(), "items": [item.model_dump() for item in stored], "sensors": sensors_now}
 
 
 @app.get("/autonomy/state")
@@ -242,6 +263,86 @@ def remember_spatial(item: SpatialMemoryItem) -> dict:
 @app.get("/map")
 def map_memory(limit: int = 100) -> dict:
     return {"ok": True, "items": [item.model_dump() for item in store.list_spatial(limit)]}
+
+
+@app.post("/map/scan")
+async def map_scan(command: MapScanCommand) -> dict:
+    observations = []
+    for angle in command.angles:
+        clamped = max(CONFIG.turret.pan_min_deg, min(CONFIG.turret.pan_max_deg, float(angle)))
+        await body.set_turret(TurretCommand(pan_deg=clamped))
+        await asyncio.sleep(command.settle_ms / 1000)
+        sensors_now = body.sensors()
+        distance_cm = sensors_now.get("front_distance_cm")
+        item = scan_item(command.zone, clamped, distance_cm, payload={"sensors": sensors_now})
+        saved_item = store.upsert_spatial(item)
+        event = store.add_event(
+            RoverEvent(
+                kind=RoverEventKind.map_observation,
+                source="map_scan",
+                label=f"{command.zone} {clamped:+.1f} deg",
+                value=distance_cm,
+                payload={"zone": command.zone, "bearing_deg": clamped, "distance_cm": distance_cm, "sensors": sensors_now},
+            )
+        )
+        events.add(event)
+        observations.append({"event": event.model_dump(), "item": saved_item.model_dump()})
+    await body.set_turret(TurretCommand(pan_deg=0))
+    capture = None
+    if command.snapshot_center:
+        capture = capture_camera_snapshot(CONFIG.camera.capture_dir, width=CONFIG.camera.width, height=CONFIG.camera.height) if body.mode == "hardware" else None
+    return {"ok": True, "zone": command.zone, "observations": observations, "capture": capture}
+
+
+@app.post("/movement/grant")
+def grant_movement(command: MovementPermissionCommand) -> dict:
+    global movement_grant
+    expires_at = time.time() + command.duration_seconds
+    movement_grant = command.model_dump() | {"expires_at": expires_at, "active": command.allow_movement}
+    event = store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="operator", label=command.task, payload=movement_grant))
+    events.add(event)
+    return {"ok": True, "movement": movement_grant, "event": event.model_dump()}
+
+
+@app.post("/movement/revoke")
+async def revoke_movement() -> dict:
+    global movement_grant
+    movement_grant = None
+    await body.stop()
+    return {"ok": True, "movement": None, "stopped": True}
+
+
+@app.get("/movement/status")
+def movement_status() -> dict:
+    active = movement_grant is not None and bool(movement_grant.get("active")) and float(movement_grant.get("expires_at", 0)) > time.time()
+    return {"ok": True, "active": active, "movement": movement_grant}
+
+
+@app.post("/tasks/map-floor")
+def map_floor_task(command: MapFloorTaskCommand) -> dict:
+    # This creates a permissioned mapping task record. It does not drive yet;
+    # autonomous wheel motion will be added only behind /movement/grant.
+    grant = MovementPermissionCommand(
+        task=f"map-floor:{command.zone}",
+        allow_movement=command.allow_movement,
+        duration_seconds=600,
+        max_linear=0.25,
+        max_turn=0.45,
+        notes=command.notes or "Permissioned floor mapping task scaffold",
+    )
+    expires_at = time.time() + grant.duration_seconds
+    task_payload = grant.model_dump() | {"expires_at": expires_at, "active": grant.allow_movement, "zone": command.zone}
+    event = store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="map_floor_task", label=grant.task, payload=task_payload))
+    events.add(event)
+    return {
+        "ok": True,
+        "task": task_payload,
+        "next_steps": [
+            "Run /map/scan for non-driving range+camera observations.",
+            "Only enable wheel motion after explicit /movement/grant and floor-safe testing.",
+        ],
+        "event": event.model_dump(),
+    }
 
 
 @app.post("/safety/simulate")

@@ -42,9 +42,30 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("events")
     sub.add_parser("autonomy")
     sub.add_parser("tick")
+    sub.add_parser("movement-status")
+    sub.add_parser("movement-revoke")
+
+    map_scan = sub.add_parser("map-scan")
+    map_scan.add_argument("--zone", default="unknown")
+    map_scan.add_argument("--angles", default="-45,-25,0,25,45", help="Comma-separated turret pan angles")
+    map_scan.add_argument("--settle-ms", type=int, default=250)
+    map_scan.add_argument("--snapshot-center", action="store_true")
+
+    movement_grant = sub.add_parser("movement-grant")
+    movement_grant.add_argument("task")
+    movement_grant.add_argument("--allow-movement", action="store_true")
+    movement_grant.add_argument("--duration-seconds", type=int, default=300)
+    movement_grant.add_argument("--max-linear", type=float, default=0.35)
+    movement_grant.add_argument("--max-turn", type=float, default=0.7)
+    movement_grant.add_argument("--notes", default=None)
+
+    map_floor = sub.add_parser("map-floor")
+    map_floor.add_argument("--zone", default="floor")
+    map_floor.add_argument("--allow-movement", action="store_true")
+    map_floor.add_argument("--notes", default=None)
 
     event = sub.add_parser("event")
-    event.add_argument("kind", choices=["sound", "speech", "wake_word", "motion", "camera_snapshot", "button", "bump", "obstacle", "battery", "network", "manual_control", "idle_tick"])
+    event.add_argument("kind", choices=["sound", "speech", "wake_word", "motion", "camera_snapshot", "button", "bump", "obstacle", "battery", "network", "manual_control", "idle_tick", "vision_analysis", "map_observation", "movement_permission"])
     event.add_argument("--source", default="cli")
     event.add_argument("--label", default=None)
     event.add_argument("--value", type=float, default=None)
@@ -101,6 +122,24 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "GET", "/autonomy/state")
     elif args.cmd == "tick":
         result = request(args.base, "POST", "/autonomy/tick", {"allow_movement": False, "inject_idle_tick": True})
+    elif args.cmd == "movement-status":
+        result = request(args.base, "GET", "/movement/status")
+    elif args.cmd == "movement-revoke":
+        result = request(args.base, "POST", "/movement/revoke")
+    elif args.cmd == "movement-grant":
+        result = request(args.base, "POST", "/movement/grant", {
+            "task": args.task,
+            "allow_movement": args.allow_movement,
+            "duration_seconds": args.duration_seconds,
+            "max_linear": args.max_linear,
+            "max_turn": args.max_turn,
+            "notes": args.notes,
+        })
+    elif args.cmd == "map-floor":
+        result = request(args.base, "POST", "/tasks/map-floor", {"zone": args.zone, "allow_movement": args.allow_movement, "notes": args.notes})
+    elif args.cmd == "map-scan":
+        angles = [float(part.strip()) for part in args.angles.split(",") if part.strip()]
+        result = request(args.base, "POST", "/map/scan", {"zone": args.zone, "angles": angles, "settle_ms": args.settle_ms, "snapshot_center": args.snapshot_center})
     elif args.cmd == "event":
         result = request(args.base, "POST", "/events", {"kind": args.kind, "source": args.source, "label": args.label, "value": args.value})
     elif args.cmd == "hear":

@@ -78,6 +78,51 @@ def test_rgb_endpoint_simulates_off_hardware():
     assert data["rgb"]["blue"] == 255
 
 
+def test_map_scan_records_range_observations():
+    r = client.post("/map/scan", json={"zone": "office", "angles": [-10, 0, 10], "settle_ms": 50})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["zone"] == "office"
+    assert len(data["observations"]) == 3
+    assert data["observations"][0]["item"]["kind"] == "range_scan"
+
+
+def test_vision_analysis_fuses_with_spatial_memory():
+    r = client.post(
+        "/vision/analysis",
+        json={
+            "summary": "A chair near the wall",
+            "labels": ["chair", "wall"],
+            "confidence": 0.8,
+            "zone": "office",
+            "snapshot_path": "captures/test.jpg",
+        },
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    labels = {item["label"] for item in data["items"]}
+    assert {"chair", "wall"} <= labels
+
+
+def test_movement_permission_and_map_floor_are_permissioned():
+    grant = client.post("/movement/grant", json={"task": "map-office", "allow_movement": False, "duration_seconds": 60})
+    assert grant.status_code == 200
+    assert grant.json()["movement"]["active"] is False
+    status = client.get("/movement/status").json()
+    assert status["active"] is False
+
+    task = client.post("/tasks/map-floor", json={"zone": "office", "allow_movement": False})
+    assert task.status_code == 200
+    assert task.json()["task"]["active"] is False
+    assert "Only enable wheel motion" in task.json()["next_steps"][1]
+
+    revoked = client.post("/movement/revoke")
+    assert revoked.status_code == 200
+    assert revoked.json()["stopped"] is True
+
+
 def test_expression_and_status():
     r = client.post("/expression", json={"mode": "listening", "text": "yes?", "brightness": 0.4})
     assert r.status_code == 200

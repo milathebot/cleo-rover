@@ -36,6 +36,9 @@ class RoverEventKind(str, Enum):
     network = "network"
     manual_control = "manual_control"
     idle_tick = "idle_tick"
+    vision_analysis = "vision_analysis"
+    map_observation = "map_observation"
+    movement_permission = "movement_permission"
 
 
 class RoverEvent(BaseModel):
@@ -91,6 +94,38 @@ class SpatialMemoryItem(BaseModel):
 class AutonomyTickCommand(BaseModel):
     allow_movement: bool = False
     inject_idle_tick: bool = True
+
+
+class VisionAnalysisCommand(BaseModel):
+    summary: str = Field(max_length=800)
+    labels: list[str] = Field(default_factory=list, max_length=20)
+    objects: list[dict[str, Any]] = Field(default_factory=list)
+    confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+    zone: str = Field(default="unknown", max_length=80)
+    snapshot_path: str | None = Field(default=None, max_length=240)
+    source: str = Field(default="external_vision", max_length=40)
+
+
+class MapScanCommand(BaseModel):
+    zone: str = Field(default="unknown", max_length=80)
+    angles: list[float] = Field(default_factory=lambda: [-45, -25, 0, 25, 45], max_length=13)
+    settle_ms: int = Field(default=250, ge=50, le=1500)
+    snapshot_center: bool = False
+
+
+class MovementPermissionCommand(BaseModel):
+    task: str = Field(max_length=80)
+    allow_movement: bool = False
+    duration_seconds: int = Field(default=300, ge=1, le=1800)
+    max_linear: float = Field(default=0.35, ge=0.0, le=1.0)
+    max_turn: float = Field(default=0.7, ge=0.0, le=1.0)
+    notes: str | None = Field(default=None, max_length=240)
+
+
+class MapFloorTaskCommand(BaseModel):
+    zone: str = Field(default="floor", max_length=80)
+    allow_movement: bool = False
+    notes: str | None = Field(default=None, max_length=240)
 
 
 class DriveCommand(BaseModel):
