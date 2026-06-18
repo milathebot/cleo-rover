@@ -33,7 +33,7 @@ def test_floor_mode_request_and_switch_argv(tmp_path):
     assert response is not None
     code_match = re.search(r"confirm (\d{6})", response)
     assert code_match is not None
-    assert profile_switch_argv(config, "floor-cautious") == ["sudo", str(tmp_path / "scripts/set_rover_profile.sh"), "floor-cautious"]
+    assert profile_switch_argv(config, "floor-cautious") == ["sudo", "-n", str(tmp_path / "scripts/set_rover_profile.sh"), "floor-cautious"]
 
     wrong = handle_floor_mode("/rover floor-mode confirm 000000", config)
     assert wrong is not None and "Wrong" in wrong

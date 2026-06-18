@@ -185,26 +185,32 @@ def help_text() -> str:
     )
 
 
-def run_command(argv: list[str], config: AgentConfig) -> tuple[int, str]:
+def run_command(argv: list[str], config: AgentConfig, *, timeout: float = 90) -> tuple[int, str]:
     if config.dry_run:
         return 0, "DRY RUN: " + " ".join(shlex.quote(part) for part in argv)
     env = os.environ.copy()
     env["PATH"] = f"{config.workdir}/.venv/bin:" + env.get("PATH", "")
-    proc = subprocess.run(
-        argv,
-        cwd=config.workdir,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=90,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=config.workdir,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = exc.stdout or ""
+        if isinstance(partial, bytes):
+            partial = partial.decode(errors="replace")
+        return 124, f"command timed out after {timeout:.0f}s: {' '.join(shlex.quote(part) for part in argv)}\n{partial}".strip()
     return proc.returncode, proc.stdout.strip()
 
 
 def profile_switch_argv(config: AgentConfig, profile: str) -> list[str]:
-    return ["sudo", str(Path(config.workdir) / PROFILE_SWITCH_SCRIPT), profile]
+    return ["sudo", "-n", str(Path(config.workdir) / PROFILE_SWITCH_SCRIPT), profile]
 
 
 def handle_floor_mode(text: str, config: AgentConfig) -> str | None:
@@ -236,7 +242,7 @@ def handle_floor_mode(text: str, config: AgentConfig) -> str | None:
         if provided != str(state.get("code")):
             return "Wrong confirmation code. Staying in current profile."
         clear_arm_state(config)
-        code, output = run_command(profile_switch_argv(config, "floor-cautious"), config)
+        code, output = run_command(profile_switch_argv(config, "floor-cautious"), config, timeout=30)
         if code != 0:
             return (
                 "FAILED to switch to floor-cautious profile.\n"
@@ -248,7 +254,7 @@ def handle_floor_mode(text: str, config: AgentConfig) -> str | None:
     if action in {"presence", "safe", "off", "cancel"}:
         clear_arm_state(config)
         floor_mode_state_path(config).unlink(missing_ok=True)
-        code, output = run_command(profile_switch_argv(config, "presence"), config)
+        code, output = run_command(profile_switch_argv(config, "presence"), config, timeout=30)
         if code != 0:
             return (
                 "FAILED to switch to no-motor presence profile.\n"
