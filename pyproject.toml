@@ -17,6 +17,7 @@ cleo-rover-calibrate = "rover.calibrate:main"
 cleo-rover-senses = "rover.senses:main"
 cleo-rover-presence = "rover.presence:main"
 cleo-rover-vision-bridge = "rover.vision_bridge:main"
+cleo-rover-telegram-agent = "rover.telegram_agent:main"
 
 [project.optional-dependencies]
 pi = [
