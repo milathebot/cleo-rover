@@ -112,24 +112,31 @@ def rear_shell() -> list[Tri]:
 
 
 def display_turret() -> list[Tri]:
-    # Separate upright 2-inch LCD holder. Display module given by user: 60 x 40 mm.
-    # Print flat on its back or upright depending on slicer preference. Face direction is -X.
+    # Separate upright 2-inch LCD holder for the roof.
+    # User measurements: display/module face ~60 x 40 mm, total depth ~17.5 mm.
+    # This cradle provides a 64 x 44 x 19.5 mm open-front pocket with a bottom
+    # cable notch for jumper wires. Face direction is -X; rear/backbone is +X.
     tris: list[Tri] = []
-    # base plate for velcro/heat-set screws onto roof pad
-    tris += box(0, 32, -38, 38, 0, 3)
-    # rear backing plate
-    tris += box(20, 23, -36, 36, 3, 56)
-    # side rails around a 62x42 pocket
-    tris += box(16, 24, -36, -31, 6, 54)
-    tris += box(16, 24, 31, 36, 6, 54)
-    # top retainer
-    tris += box(16, 24, -36, 36, 50, 56)
-    # bottom lip split with center cable notch
-    tris += box(16, 24, -36, -10, 3, 10)
-    tris += box(16, 24, 10, 36, 3, 10)
-    # two triangular-ish support struts approximated as box buttresses
-    tris += box(3, 20, -34, -29, 3, 28)
-    tris += box(3, 20, 29, 34, 3, 28)
+    # Wide base plate for velcro or later drill/heat-set insert mounting onto shell roof.
+    tris += box(0, 46, -42, 42, 0, 3.2)
+    # rear backing plate, just behind the 17.5 mm display/backbone stack.
+    tris += box(23, 26, -39, 39, 3.2, 64)
+    # side rails: inner clear width is 64 mm, enough for a 60 mm module plus tolerance.
+    tris += box(4, 26, -39, -32, 6, 61)
+    tris += box(4, 26, 32, 39, 6, 61)
+    # top retainer, inner clear height is ~44 mm for the 40 mm module plus tolerance.
+    tris += box(4, 26, -39, 39, 54, 64)
+    # bottom retainer split by a generous center cable notch.
+    tris += box(4, 26, -39, -13, 3.2, 10)
+    tris += box(4, 26, 13, 39, 3.2, 10)
+    # rear cable relief window edges / strain-relief shoulders.
+    tris += box(26, 36, -39, -23, 3.2, 22)
+    tris += box(26, 36, 23, 39, 3.2, 22)
+    # box buttresses from base to display back for stiffness.
+    tris += box(4, 23, -38, -32, 3.2, 32)
+    tris += box(4, 23, 32, 38, 3.2, 32)
+    # low front stop so the module cannot slide out downward.
+    tris += box(0, 6, -18, 18, 3.2, 7)
     return tris
 
 

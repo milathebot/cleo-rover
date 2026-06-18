@@ -17,8 +17,10 @@ Prototype printable body shell for the Freenove/Cleo Rover.
   - Rear 100 mm shell section with side LED/air vents and rear Pi port opening.
 - `cleo_rover_display_roof_turret_v1.stl`
   - Separate rooftop holder for the 2-inch LCD module.
-  - Designed around the measured LCD body envelope: ~60 mm x 40 mm.
-  - Has a bottom-center cable notch and can be velcroed or screwed/heat-set to the roof.
+  - Designed around the measured LCD body envelope: ~60 mm x 40 mm face, ~17.5 mm total depth.
+  - Provides a loose-fit open-front pocket of about 64 mm x 44 mm x 19.5 mm.
+  - Has a bottom-center cable notch and rear cable relief shoulders.
+  - Mount it to the roof with velcro first; drill/heat-set only after fit is confirmed.
 
 ## Print suggestions, PLA on Bambu A1 Mini
 
