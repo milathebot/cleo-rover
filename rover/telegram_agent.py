@@ -60,12 +60,16 @@ class TelegramAPI:
 
 def parse_rover_command(text: str) -> tuple[list[str] | None, str | None]:
     text = text.strip()
-    if text.startswith("/rover"):
-        text = text[len("/rover") :].strip()
+    first = text.split(maxsplit=1)[0] if text else ""
+    if first.startswith("/rover"):
+        # Accept both /rover and /rover@botname, which Telegram may emit in groups.
+        text = text[len(first) :].strip()
     elif text.startswith("rover "):
         text = text[len("rover ") :].strip()
     elif text in {"/status", "status"}:
         text = "status"
+    elif text in {"/start", "start", "/help", "help"}:
+        return None, help_text()
     else:
         return None, None
 
@@ -136,9 +140,11 @@ def handle_message(api: TelegramAPI, config: AgentConfig, message: dict[str, Any
     chat_id = int(chat["id"])
     user_id = int(user.get("id") or 0)
     text = str(message.get("text") or "")
+    print(json.dumps({"ok": True, "event": "message", "chat_id": chat_id, "user_id": user_id, "text": text[:120]}), flush=True)
 
     if user_id != config.allowed_user_id:
         api.send_message(chat_id, "Unauthorized rover command sender.")
+        print(json.dumps({"ok": False, "event": "unauthorized", "user_id": user_id}), flush=True)
         return
 
     argv, error = parse_rover_command(text)
@@ -146,9 +152,11 @@ def handle_message(api: TelegramAPI, config: AgentConfig, message: dict[str, Any
         api.send_message(chat_id, error)
         return
     if argv is None:
+        print(json.dumps({"ok": True, "event": "ignored", "text": text[:120]}), flush=True)
         return
 
     api.send_message(chat_id, "Running: " + " ".join(shlex.quote(part) for part in argv))
+    print(json.dumps({"ok": True, "event": "run", "argv": argv}), flush=True)
     try:
         code, output = run_command(argv, config)
         prefix = "OK" if code == 0 else f"FAILED exit={code}"

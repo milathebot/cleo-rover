@@ -26,3 +26,12 @@ def test_ignores_non_rover_text():
     argv, error = parse_rover_command("hello")
     assert argv is None
     assert error is None
+
+
+def test_start_and_group_mention_help():
+    argv, error = parse_rover_command("/start")
+    assert argv is None
+    assert error is not None
+    argv, error = parse_rover_command("/rover@cleo_rover_bot status")
+    assert error is None
+    assert argv == ["cleo-rover", "status"]
