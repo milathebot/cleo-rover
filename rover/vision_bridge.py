@@ -48,6 +48,9 @@ Return JSON only with this shape:
 
 
 def load_analysis(path_or_json: str) -> dict[str, Any]:
+    stripped = path_or_json.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        return json.loads(stripped)
     candidate = Path(path_or_json).expanduser()
     text = candidate.read_text() if candidate.exists() else path_or_json
     return json.loads(text)
