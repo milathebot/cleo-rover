@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from rover.telegram_agent import parse_rover_command
+import re
+
+from rover.telegram_agent import AgentConfig, active_floor_arm, build_floor_map_run, handle_floor_arm, parse_rover_command
 
 
 def test_parse_safe_status_command():
@@ -23,6 +25,32 @@ def test_parse_floor_precheck_and_estop():
     argv, error = parse_rover_command("/rover estop")
     assert error is None
     assert argv == ["cleo-rover", "safe-mode"]
+
+
+def test_floor_arm_request_confirm_and_map_run(tmp_path):
+    config = AgentConfig(token="t", allowed_user_id=1, workdir=str(tmp_path))
+    response = handle_floor_arm("/rover floor-arm request", config)
+    assert response is not None
+    code_match = re.search(r"confirm (\d{6})", response)
+    assert code_match is not None
+    code = code_match.group(1)
+
+    argv, error = build_floor_map_run("/rover floor-map-run --zone living-room --steps 1", config)
+    assert argv is None
+    assert error is not None and "not armed" in error
+
+    wrong = handle_floor_arm("/rover floor-arm confirm 000000", config)
+    assert wrong is not None and "Wrong" in wrong
+    confirmed = handle_floor_arm(f"/rover floor-arm confirm {code}", config)
+    assert confirmed is not None and "armed" in confirmed
+    assert active_floor_arm(config) is not None
+    argv, error = build_floor_map_run("/rover floor-map-run --zone living-room --steps 1", config)
+    assert error is None
+    assert argv == ["cleo-rover", "map-floor", "--allow-movement", "--zone", "living-room", "--steps", "1"]
+
+    cancelled = handle_floor_arm("/rover floor-arm cancel", config)
+    assert cancelled is not None and "cancelled" in cancelled
+    assert active_floor_arm(config) is None
 
 
 def test_parse_floor_map_dry_run_allowed_but_map_floor_blocked():

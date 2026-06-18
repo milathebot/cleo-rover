@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import shlex
 import subprocess
 import sys
@@ -10,6 +11,7 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 SAFE_COMMANDS: dict[str, list[str]] = {
@@ -26,6 +28,7 @@ SAFE_COMMANDS: dict[str, list[str]] = {
 
 SAFE_PREFIX_COMMANDS = {"map-scan", "visual-map-scan", "look-remember", "rgb-mode", "floor-precheck", "floor-map-dry-run"}
 DANGEROUS_COMMANDS = {"drive", "move-step", "rotate-step", "movement-grant", "map-floor", "dance"}
+ARM_STATE_FILE = "data/telegram_floor_arm.json"
 
 
 @dataclass
@@ -35,6 +38,57 @@ class AgentConfig:
     workdir: str = "/home/cleo/cleo-rover"
     poll_timeout: int = 25
     dry_run: bool = False
+
+
+def rover_text(text: str) -> str | None:
+    text = text.strip()
+    first = text.split(maxsplit=1)[0] if text else ""
+    if first.startswith("/rover"):
+        return text[len(first) :].strip()
+    if text.startswith("rover "):
+        return text[len("rover ") :].strip()
+    if text in {"/status", "status"}:
+        return "status"
+    if text in {"/start", "start", "/help", "help"}:
+        return "help"
+    return None
+
+
+def arm_state_path(config: AgentConfig) -> Path:
+    return Path(config.workdir) / ARM_STATE_FILE
+
+
+def load_arm_state(config: AgentConfig) -> dict[str, Any] | None:
+    path = arm_state_path(config)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def save_arm_state(config: AgentConfig, state: dict[str, Any]) -> None:
+    path = arm_state_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2, sort_keys=True))
+
+
+def clear_arm_state(config: AgentConfig) -> None:
+    try:
+        arm_state_path(config).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def active_floor_arm(config: AgentConfig) -> dict[str, Any] | None:
+    state = load_arm_state(config)
+    if not state or not state.get("confirmed"):
+        return None
+    if float(state.get("expires_at", 0)) <= time.time():
+        clear_arm_state(config)
+        return None
+    return state
 
 
 class TelegramAPI:
@@ -61,21 +115,12 @@ class TelegramAPI:
 
 
 def parse_rover_command(text: str) -> tuple[list[str] | None, str | None]:
-    text = text.strip()
-    first = text.split(maxsplit=1)[0] if text else ""
-    if first.startswith("/rover"):
-        # Accept both /rover and /rover@botname, which Telegram may emit in groups.
-        text = text[len(first) :].strip()
-    elif text.startswith("rover "):
-        text = text[len("rover ") :].strip()
-    elif text in {"/status", "status"}:
-        text = "status"
-    elif text in {"/start", "start", "/help", "help"}:
-        return None, help_text()
-    else:
-        return None, None
+    parsed = rover_text(text)
 
-    if not text or text in {"help", "/help"}:
+    if not parsed:
+        return None, None
+    text = parsed
+    if text in {"help", "/help"}:
         return None, help_text()
 
     parts = shlex.split(text)
@@ -109,6 +154,11 @@ def help_text() -> str:
         "  /rover map\n"
         "  /rover floor-precheck --zone living-room\n"
         "  /rover floor-map-dry-run --zone living-room\n"
+        "  /rover floor-arm request\n"
+        "  /rover floor-arm confirm CODE\n"
+        "  /rover floor-arm status\n"
+        "  /rover floor-arm cancel\n"
+        "  /rover floor-map-run --zone living-room --steps 1  (requires active floor-arm)\n"
         "  /rover map-scan --zone office --angles=-25,0,25\n"
         "  /rover visual-map-scan --zone office --angles=-25,0,25\n"
         "  /rover look-remember --zone office --pan 0\n"
@@ -137,6 +187,75 @@ def run_command(argv: list[str], config: AgentConfig) -> tuple[int, str]:
     return proc.returncode, proc.stdout.strip()
 
 
+def handle_floor_arm(text: str, config: AgentConfig) -> str | None:
+    parsed = rover_text(text)
+    if not parsed:
+        return None
+    parts = shlex.split(parsed)
+    if not parts or parts[0] != "floor-arm":
+        return None
+    action = parts[1] if len(parts) > 1 else "status"
+    if action == "request":
+        code = f"{secrets.randbelow(900000) + 100000}"
+        state = {
+            "requested_at": time.time(),
+            "request_expires_at": time.time() + 300,
+            "code": code,
+            "confirmed": False,
+            "expires_at": 0,
+            "zone": "floor",
+        }
+        save_arm_state(config, state)
+        return (
+            "Floor movement arm requested.\n"
+            "Before confirming: rover on floor, open area clear, cats/feet clear, battery ok, /rover floor-precheck passed.\n"
+            f"Confirm within 5 min with: /rover floor-arm confirm {code}\n"
+            "Cancel: /rover floor-arm cancel"
+        )
+    if action == "confirm":
+        state = load_arm_state(config)
+        if not state or state.get("confirmed"):
+            return "No pending floor-arm request. Run /rover floor-arm request first."
+        if float(state.get("request_expires_at", 0)) <= time.time():
+            clear_arm_state(config)
+            return "Floor-arm request expired. Run /rover floor-arm request again."
+        provided = parts[2] if len(parts) > 2 else ""
+        if provided != str(state.get("code")):
+            return "Wrong confirmation code. Movement remains blocked."
+        state.update({"confirmed": True, "confirmed_at": time.time(), "expires_at": time.time() + 60})
+        save_arm_state(config, state)
+        return (
+            "Floor movement armed for 60 seconds.\n"
+            "Allowed next command: /rover floor-map-run --zone living-room --steps 1\n"
+            "Emergency stop/cancel: /rover estop or /rover floor-arm cancel"
+        )
+    if action in {"cancel", "revoke", "off"}:
+        clear_arm_state(config)
+        return "Floor movement arm cancelled."
+    if action == "status":
+        state = load_arm_state(config)
+        active = active_floor_arm(config)
+        if active:
+            return f"Floor movement is ARMED for {max(0, int(active['expires_at'] - time.time()))}s."
+        if state and not state.get("confirmed"):
+            return f"Floor movement request pending for {max(0, int(state.get('request_expires_at', 0) - time.time()))}s."
+        return "Floor movement is not armed."
+    return "Usage: /rover floor-arm request | confirm CODE | status | cancel"
+
+
+def build_floor_map_run(text: str, config: AgentConfig) -> tuple[list[str] | None, str | None]:
+    parsed = rover_text(text)
+    if not parsed:
+        return None, None
+    parts = shlex.split(parsed)
+    if not parts or parts[0] != "floor-map-run":
+        return None, None
+    active = active_floor_arm(config)
+    if not active:
+        return None, "Floor movement is not armed. Run /rover floor-arm request, then confirm the code first."
+    return ["cleo-rover", "map-floor", "--allow-movement", *parts[1:]], None
+
+
 def handle_message(api: TelegramAPI, config: AgentConfig, message: dict[str, Any]) -> None:
     chat = message.get("chat") or {}
     user = message.get("from") or {}
@@ -152,18 +271,32 @@ def handle_message(api: TelegramAPI, config: AgentConfig, message: dict[str, Any
         print(json.dumps({"ok": False, "event": "unauthorized", "user_id": user_id}), flush=True)
         return
 
-    argv, error = parse_rover_command(text)
+    arm_response = handle_floor_arm(text, config)
+    if arm_response is not None:
+        api.send_message(chat_id, arm_response)
+        return
+
+    argv, error = build_floor_map_run(text, config)
+    if error:
+        api.send_message(chat_id, error)
+        return
+    if argv is None:
+        argv, error = parse_rover_command(text)
     if error:
         api.send_message(chat_id, error)
         return
     if argv is None:
         print(json.dumps({"ok": True, "event": "ignored", "text": text[:120]}), flush=True)
         return
+    if argv[:2] == ["cleo-rover", "safe-mode"]:
+        clear_arm_state(config)
 
     api.send_message(chat_id, "Running: " + " ".join(shlex.quote(part) for part in argv))
     print(json.dumps({"ok": True, "event": "run", "argv": argv}), flush=True)
     try:
         code, output = run_command(argv, config)
+        if argv[:2] == ["cleo-rover", "map-floor"]:
+            clear_arm_state(config)
         prefix = "OK" if code == 0 else f"FAILED exit={code}"
         api.send_message(chat_id, f"{prefix}\n{output or '(no output)'}")
     except subprocess.TimeoutExpired:
