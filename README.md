@@ -89,6 +89,8 @@ Movement requests remain disabled unless both are true:
 
 ## API
 
+The installed systemd service binds the API to `127.0.0.1:8099` by default. Use the local `cleo-rover` CLI or the Pi-local Telegram agent for operation; do not expose the rover control API on the LAN unless you deliberately add separate authentication and firewalling.
+
 ```text
 GET  /health
 GET  /status

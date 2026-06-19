@@ -21,7 +21,7 @@ Type=simple
 User=$USER_NAME
 WorkingDirectory=$APP_DIR
 Environment=CLEO_ROVER_MODE=sim
-ExecStart=$APP_DIR/.venv/bin/uvicorn rover.service:app --host 0.0.0.0 --port 8099
+ExecStart=$APP_DIR/.venv/bin/uvicorn rover.service:app --host 127.0.0.1 --port 8099
 Restart=on-failure
 RestartSec=3
 

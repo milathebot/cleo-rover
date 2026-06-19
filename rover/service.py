@@ -14,7 +14,7 @@ from .drivers import RoverBody
 from .hub import fetch_hub_snapshot
 from .mapping import map_summary, observation_items, scan_item, semantic_events_from_analysis
 from .models import AutonomyTickCommand, BehaviorDecision, DriveCommand, ExpressionCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisualMapScanCommand
-from .peripherals import capture_camera_snapshot
+from .peripherals import camera_tool, capture_camera_snapshot
 from .persistence import RoverStore
 from .renderer import render_expression
 from .safety_sim import scenarios
@@ -348,7 +348,9 @@ def vision_snapshot(event: RoverEvent | None = None) -> dict:
 def vision_motion(delay_seconds: float = 0.6) -> dict:
     if body.mode != "hardware":
         return {"ok": True, "simulated": True, "motion": {"motion_detected": False, "mean_delta": 0.0}}
-    tool = "rpicam-still"
+    tool = camera_tool()
+    if not tool:
+        return {"ok": False, "error": "no rpicam-still/libcamera-still command found"}
     command = [tool, "-o", "{output}", "--width", "640", "--height", "480", "--timeout", "500", "--nopreview"]
     result = capture_motion_pair(command, CONFIG.camera.capture_dir, delay_seconds=delay_seconds)
     if result.get("ok") and result.get("motion", {}).get("motion_detected"):
