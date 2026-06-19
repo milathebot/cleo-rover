@@ -222,6 +222,51 @@ def doctor() -> dict:
     )
 
 
+@app.get("/preflight")
+def preflight(mode: str = "presence") -> dict:
+    sensors_now = body.sensors()
+    status_now = status().model_dump()
+    doctor_now = doctor_report(
+        data_path=CONFIG.life_loop.data_path,
+        capture_dir=CONFIG.camera.capture_dir,
+        status=status_now,
+        sensors=sensors_now,
+    )
+    checks = []
+
+    def add(name: str, ok: bool, detail: str) -> None:
+        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+
+    add("service_online", status_now.get("online") is True, "API returned status")
+    add("profile_known", bool(status_now.get("profile")), f"profile={status_now.get('profile')}")
+    add("doctor_clean", doctor_now.get("ok") is True, "; ".join(doctor_now.get("warnings") or ["no warnings"]))
+    add("sensors_shape", isinstance(sensors_now, dict) and "errors" in sensors_now, "sensor snapshot returned")
+
+    if mode in {"presence", "boot", "safe"}:
+        add("no_motor_profile", status_now.get("motors_armed") is False, "motors must be unarmed for presence/boot")
+        add("bench_safe", status_now.get("safety", {}).get("bench_safe_no_motors") is True, "bench_safe_no_motors should be true")
+    elif mode in {"floor", "floor-cautious"}:
+        add("floor_profile", status_now.get("profile") == "hardware-floor-cautious", "floor tests require hardware-floor-cautious profile")
+        add("motor_profile_armed", status_now.get("motors_armed") is True, "floor profile should arm motors only after explicit mode switch")
+        front_distance = sensors_now.get("front_distance_cm")
+        front_clear = front_distance is None or float(front_distance) >= max(45.0, CONFIG.safety.front_stop_distance_cm + 20)
+        add("ultrasonic_ready", bool(sensors_now.get("ultrasonic_ready")), "front range needed before floor movement")
+        add("front_clear", front_clear, "front must be clear for tiny floor step")
+    else:
+        add("mode_valid", False, "mode must be presence, boot, safe, floor, or floor-cautious")
+
+    ok = all(check["ok"] for check in checks)
+    return {
+        "ok": ok,
+        "mode": mode,
+        "checks": checks,
+        "status": status_now,
+        "sensors": sensors_now,
+        "doctor": doctor_now,
+        "next_step": "safe to continue this mode" if ok else "fix failed checks before continuing",
+    }
+
+
 @app.post("/data/prune")
 def prune_data(keep_days: int = 30, keep_snapshots: int = 500, dry_run: bool = False) -> dict:
     event_result = store.prune_events(keep_days=keep_days, dry_run=dry_run)

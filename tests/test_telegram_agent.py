@@ -24,6 +24,10 @@ def test_parse_safe_situation_and_map_summary_commands():
     assert error is None
     assert argv == ["cleo-rover", "doctor"]
 
+    argv, error = parse_rover_command("/rover preflight --mode floor")
+    assert error is None
+    assert argv == ["cleo-rover", "preflight", "--mode", "floor"]
+
     argv, error = parse_rover_command("/rover last-seen")
     assert error is None
     assert argv == ["cleo-rover", "last-seen"]

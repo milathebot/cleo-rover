@@ -40,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("stop")
     sub.add_parser("sensors")
     sub.add_parser("doctor")
+    preflight = sub.add_parser("preflight")
+    preflight.add_argument("--mode", default="presence", choices=["presence", "boot", "safe", "floor", "floor-cautious"])
     sub.add_parser("events")
     sub.add_parser("autonomy")
     sub.add_parser("tick")
@@ -160,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "GET", "/sensors")
     elif args.cmd == "doctor":
         result = request(args.base, "GET", "/doctor")
+    elif args.cmd == "preflight":
+        result = request(args.base, "GET", f"/preflight?mode={args.mode}")
     elif args.cmd == "events":
         result = request(args.base, "GET", "/events/recent")
     elif args.cmd == "map":

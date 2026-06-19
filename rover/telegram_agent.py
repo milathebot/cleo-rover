@@ -27,12 +27,13 @@ SAFE_COMMANDS: dict[str, list[str]] = {
     "look-around": ["cleo-rover", "look-around"],
     "motion-check": ["cleo-rover", "motion-check"],
     "movement-status": ["cleo-rover", "movement-status"],
+    "preflight": ["cleo-rover", "preflight"],
     "presence-tick": ["cleo-rover", "presence-tick", "--cleanup"],
     "situation": ["cleo-rover", "situation"],
     "snapshot": ["cleo-rover", "snapshot"],
 }
 
-SAFE_PREFIX_COMMANDS = {"map-scan", "visual-map-scan", "look-remember", "remember-room", "rgb-mode", "floor-precheck", "floor-map-dry-run"}
+SAFE_PREFIX_COMMANDS = {"map-scan", "visual-map-scan", "look-remember", "remember-room", "rgb-mode", "preflight", "floor-precheck", "floor-map-dry-run"}
 DANGEROUS_COMMANDS = {"drive", "move-step", "rotate-step", "movement-grant", "map-floor", "dance"}
 ARM_STATE_FILE = "data/telegram_floor_arm.json"
 FLOOR_MODE_STATE_FILE = "data/telegram_floor_mode.json"
@@ -173,6 +174,8 @@ def help_text() -> str:
         "  /rover status\n"
         "  /rover sensors\n"
         "  /rover doctor\n"
+        "  /rover preflight\n"
+        "  /rover preflight --mode floor\n"
         "  /rover safe-mode\n"
         "  /rover estop\n"
         "  /rover map\n"

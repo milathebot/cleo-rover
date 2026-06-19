@@ -94,6 +94,7 @@ GET  /health
 GET  /status
 GET  /config
 GET  /doctor
+GET  /preflight
 GET  /sensors
 POST /data/prune
 GET  /last-seen

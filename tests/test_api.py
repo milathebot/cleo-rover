@@ -131,6 +131,11 @@ def test_doctor_last_seen_motion_and_prune_endpoints():
     assert doctor.status_code == 200
     assert "system" in doctor.json()
 
+    preflight = client.get("/preflight?mode=presence")
+    assert preflight.status_code == 200
+    assert preflight.json()["mode"] == "presence"
+    assert any(check["name"] == "bench_safe" for check in preflight.json()["checks"])
+
     last_seen = client.get("/last-seen")
     assert last_seen.status_code == 200
     assert last_seen.json()["ok"] is True
