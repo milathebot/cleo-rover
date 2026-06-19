@@ -11,7 +11,7 @@ from .autonomy import AutonomyEngine, EventStore
 from .config import load_config
 from .drivers import RoverBody
 from .hub import fetch_hub_snapshot
-from .mapping import observation_items, scan_item
+from .mapping import map_summary, observation_items, scan_item, semantic_events_from_analysis
 from .models import AutonomyTickCommand, BehaviorDecision, DriveCommand, ExpressionCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisualMapScanCommand
 from .peripherals import capture_camera_snapshot
 from .persistence import RoverStore
@@ -50,6 +50,34 @@ def active_movement_grant() -> dict | None:
     if not movement_grant.get("active") or float(movement_grant.get("expires_at", 0)) <= time.time():
         return None
     return movement_grant
+
+
+def sensor_safety_event(sensors_now: dict, *, source: str) -> RoverEvent | None:
+    distance = sensors_now.get("front_distance_cm")
+    if distance is None:
+        return None
+    try:
+        distance_value = float(distance)
+    except (TypeError, ValueError):
+        return None
+    threshold = float(sensors_now.get("front_stop_distance_cm") or CONFIG.safety.front_stop_distance_cm)
+    if distance_value >= threshold:
+        return None
+    return RoverEvent(
+        kind=RoverEventKind.obstacle,
+        source=source,
+        label=f"front obstacle {distance_value:.1f}cm",
+        value=distance_value,
+        payload={"sensors": sensors_now, "threshold_cm": threshold},
+    )
+
+
+def remember_event(event: RoverEvent) -> RoverEvent:
+    saved = store.add_event(event)
+    events.add(saved)
+    autonomy.update_from_event(saved)
+    store.save_state(autonomy.state)
+    return saved
 
 
 def drive_safety(command: DriveCommand, *, require_permission: bool = False) -> tuple[bool, str, DriveCommand]:
@@ -259,7 +287,8 @@ def vision_analysis(command: VisionAnalysisCommand) -> dict:
     autonomy.update_from_event(saved)
     items = observation_items(zone=command.zone, bearing_deg=bearing, distance_cm=distance_cm, analysis=command.model_dump())
     stored = [store.upsert_spatial(item) for item in items]
-    return {"ok": True, "event": saved.model_dump(), "items": [item.model_dump() for item in stored], "sensors": sensors_now}
+    semantic_events = [remember_event(event) for event in semantic_events_from_analysis(command.model_dump(), distance_cm=distance_cm, bearing_deg=bearing)]
+    return {"ok": True, "event": saved.model_dump(), "semantic_events": [event.model_dump() for event in semantic_events], "items": [item.model_dump() for item in stored], "sensors": sensors_now}
 
 
 @app.get("/autonomy/state")
@@ -299,6 +328,30 @@ def remember_spatial(item: SpatialMemoryItem) -> dict:
 @app.get("/map")
 def map_memory(limit: int = 100) -> dict:
     return {"ok": True, "items": [item.model_dump() for item in store.list_spatial(limit)]}
+
+
+@app.get("/map/summary")
+def map_memory_summary(limit: int = 500) -> dict:
+    items = store.list_spatial(limit)
+    return {"ok": True, "summary": map_summary(items), "items": [item.model_dump() for item in items[:25]]}
+
+
+@app.get("/situation")
+def situation() -> dict:
+    sensors_now = body.sensors()
+    obstacle = sensor_safety_event(sensors_now, source="situation")
+    items = store.list_spatial(100)
+    risk = "blocked" if obstacle else "clear_or_unknown"
+    return {
+        "ok": True,
+        "risk": risk,
+        "obstacle": obstacle.model_dump() if obstacle else None,
+        "status": status().model_dump(),
+        "sensors": sensors_now,
+        "movement": movement_status(),
+        "map_summary": map_summary(items),
+        "recent_events": [event.model_dump() for event in store.recent_events(8)],
+    }
 
 
 @app.post("/map/scan")
@@ -457,6 +510,10 @@ async def safety_simulate(name: str | None = None) -> dict:
 @app.post("/autonomy/tick")
 async def autonomy_tick(command: AutonomyTickCommand | None = None) -> dict:
     command = command or AutonomyTickCommand()
+    sensors_now = body.sensors()
+    obstacle = sensor_safety_event(sensors_now, source="autonomy_tick")
+    if obstacle:
+        remember_event(obstacle)
     if command.inject_idle_tick:
         idle = store.add_event(RoverEvent(kind=RoverEventKind.idle_tick, source="autonomy", timestamp=time.time()))
         events.add(idle)

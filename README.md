@@ -106,6 +106,8 @@ GET  /autonomy/dashboard
 POST /autonomy/tick
 GET  /cleo-hub
 GET  /map
+GET  /map/summary
+GET  /situation
 POST /map/remember
 POST /safety/simulate
 POST /hearing/simulate

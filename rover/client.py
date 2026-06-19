@@ -43,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("autonomy")
     sub.add_parser("tick")
     sub.add_parser("map")
+    sub.add_parser("map-summary")
+    sub.add_parser("situation")
     floor_precheck = sub.add_parser("floor-precheck")
     floor_precheck.add_argument("--zone", default="floor")
     floor_precheck.add_argument("--angles", default="-30,0,30")
@@ -148,6 +150,10 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "GET", "/events/recent")
     elif args.cmd == "map":
         result = request(args.base, "GET", "/map")
+    elif args.cmd == "map-summary":
+        result = request(args.base, "GET", "/map/summary")
+    elif args.cmd == "situation":
+        result = request(args.base, "GET", "/situation")
     elif args.cmd == "floor-precheck":
         angles = [float(part.strip()) for part in args.angles.split(",") if part.strip()]
         safe = request(args.base, "POST", "/stop")

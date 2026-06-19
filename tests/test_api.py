@@ -107,6 +107,22 @@ def test_vision_analysis_fuses_with_spatial_memory():
     assert data["ok"] is True
     labels = {item["label"] for item in data["items"]}
     assert {"chair", "wall"} <= labels
+    assert any(item["kind"] == "vision_obstacle" for item in data["items"])
+    assert any(event["kind"] == "obstacle" for event in data["semantic_events"])
+
+
+def test_map_summary_and_situation_endpoints():
+    summary = client.get("/map/summary")
+    assert summary.status_code == 200
+    assert summary.json()["ok"] is True
+    assert "summary" in summary.json()
+
+    situation = client.get("/situation")
+    assert situation.status_code == 200
+    data = situation.json()
+    assert data["ok"] is True
+    assert data["risk"] in {"blocked", "clear_or_unknown"}
+    assert "map_summary" in data
 
 
 def test_movement_permission_and_map_floor_are_permissioned():

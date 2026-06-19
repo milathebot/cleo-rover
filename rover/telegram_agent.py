@@ -21,8 +21,10 @@ SAFE_COMMANDS: dict[str, list[str]] = {
     "stop": ["cleo-rover", "safe-mode"],
     "estop": ["cleo-rover", "safe-mode"],
     "map": ["cleo-rover", "map"],
+    "map-summary": ["cleo-rover", "map-summary"],
     "movement-status": ["cleo-rover", "movement-status"],
     "presence-tick": ["cleo-rover", "presence-tick", "--cleanup"],
+    "situation": ["cleo-rover", "situation"],
     "snapshot": ["cleo-rover", "snapshot"],
 }
 
@@ -169,6 +171,8 @@ def help_text() -> str:
         "  /rover safe-mode\n"
         "  /rover estop\n"
         "  /rover map\n"
+        "  /rover map-summary\n"
+        "  /rover situation\n"
         "  /rover floor-precheck --zone living-room\n"
         "  /rover floor-map-dry-run --zone living-room\n"
         "  /rover floor-arm request\n"
