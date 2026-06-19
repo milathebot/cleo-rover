@@ -8,6 +8,7 @@ from fastapi import FastAPI, Response
 from fastapi.responses import HTMLResponse
 
 from .autonomy import AutonomyEngine, EventStore
+from .awareness import capture_motion_pair, doctor_report, last_seen_summary, prune_capture_dir, range_state_from_samples
 from .config import load_config
 from .drivers import RoverBody
 from .hub import fetch_hub_snapshot
@@ -210,6 +211,29 @@ def sensors() -> dict:
     return body.sensors()
 
 
+@app.get("/doctor")
+def doctor() -> dict:
+    sensors_now = body.sensors()
+    return doctor_report(
+        data_path=CONFIG.life_loop.data_path,
+        capture_dir=CONFIG.camera.capture_dir,
+        status=status().model_dump(),
+        sensors=sensors_now,
+    )
+
+
+@app.post("/data/prune")
+def prune_data(keep_days: int = 30, keep_snapshots: int = 500, dry_run: bool = False) -> dict:
+    event_result = store.prune_events(keep_days=keep_days, dry_run=dry_run)
+    capture_result = prune_capture_dir(CONFIG.camera.capture_dir, keep=keep_snapshots, dry_run=dry_run)
+    return {"ok": True, "events": event_result, "captures": capture_result}
+
+
+@app.get("/last-seen")
+def last_seen(limit: int = 20) -> dict:
+    return {"ok": True, "items": last_seen_summary(store.list_spatial(500), limit=limit)}
+
+
 @app.post("/events")
 def post_event(event: RoverEvent) -> dict:
     saved = store.add_event(event)
@@ -273,6 +297,18 @@ def vision_snapshot(event: RoverEvent | None = None) -> dict:
         },
         "state": autonomy.state.model_dump(),
     }
+
+
+@app.post("/vision/motion")
+def vision_motion(delay_seconds: float = 0.6) -> dict:
+    if body.mode != "hardware":
+        return {"ok": True, "simulated": True, "motion": {"motion_detected": False, "mean_delta": 0.0}}
+    tool = "rpicam-still"
+    command = [tool, "-o", "{output}", "--width", "640", "--height", "480", "--timeout", "500", "--nopreview"]
+    result = capture_motion_pair(command, CONFIG.camera.capture_dir, delay_seconds=delay_seconds)
+    if result.get("ok") and result.get("motion", {}).get("motion_detected"):
+        remember_event(RoverEvent(kind=RoverEventKind.motion, source="local_motion", label="frame difference motion", payload=result))
+    return result
 
 
 @app.post("/vision/analysis")
@@ -341,15 +377,18 @@ def situation() -> dict:
     sensors_now = body.sensors()
     obstacle = sensor_safety_event(sensors_now, source="situation")
     items = store.list_spatial(100)
-    risk = "blocked" if obstacle else "clear_or_unknown"
+    range_state = range_state_from_samples([sensors_now.get("front_distance_cm")], stop_cm=CONFIG.safety.front_stop_distance_cm)
+    risk = "blocked" if obstacle or range_state["state"] == "blocked" else "clear_or_unknown"
     return {
         "ok": True,
         "risk": risk,
+        "range_state": range_state,
         "obstacle": obstacle.model_dump() if obstacle else None,
         "status": status().model_dump(),
         "sensors": sensors_now,
         "movement": movement_status(),
         "map_summary": map_summary(items),
+        "last_seen": last_seen_summary(items, limit=10),
         "recent_events": [event.model_dump() for event in store.recent_events(8)],
     }
 
@@ -408,6 +447,18 @@ async def visual_map_scan(command: VisualMapScanCommand) -> dict:
         observations.append({"event": event.model_dump(), "item": saved_item.model_dump(), "capture": capture})
     await body.set_turret(TurretCommand(pan_deg=0))
     return {"ok": True, "zone": command.zone, "observations": observations, "needs_external_vision": True}
+
+
+@app.post("/presence/look-around")
+async def presence_look_around(zone: str = "presence") -> dict:
+    result = await map_scan(MapScanCommand(zone=zone, angles=[-35, -18, 0, 18, 35], settle_ms=350, snapshot_center=False))
+    return {"ok": True, "mode": "no_motor_presence", "movement": "none", "result": result}
+
+
+@app.post("/presence/remember-room")
+async def presence_remember_room(zone: str = "room") -> dict:
+    result = await visual_map_scan(VisualMapScanCommand(zone=zone, angles=[-45, -25, 0, 25, 45], settle_ms=400, capture_each_angle=True))
+    return {"ok": True, "mode": "no_motor_presence", "movement": "none", "result": result, "next_step": "Send each capture to Hermes vision, then POST results to /vision/analysis."}
 
 
 @app.post("/movement/move-step")

@@ -123,6 +123,35 @@ def test_map_summary_and_situation_endpoints():
     assert data["ok"] is True
     assert data["risk"] in {"blocked", "clear_or_unknown"}
     assert "map_summary" in data
+    assert "range_state" in data
+
+
+def test_doctor_last_seen_motion_and_prune_endpoints():
+    doctor = client.get("/doctor")
+    assert doctor.status_code == 200
+    assert "system" in doctor.json()
+
+    last_seen = client.get("/last-seen")
+    assert last_seen.status_code == 200
+    assert last_seen.json()["ok"] is True
+
+    motion = client.post("/vision/motion")
+    assert motion.status_code == 200
+    assert motion.json()["ok"] is True
+
+    prune = client.post("/data/prune?keep_days=30&keep_snapshots=500&dry_run=true")
+    assert prune.status_code == 200
+    assert prune.json()["ok"] is True
+
+
+def test_no_motor_presence_lookaround_and_remember_room_paths():
+    look = client.post("/presence/look-around?zone=office")
+    assert look.status_code == 200
+    assert look.json()["movement"] == "none"
+
+    remember = client.post("/presence/remember-room?zone=office")
+    assert remember.status_code == 200
+    assert remember.json()["movement"] == "none"
 
 
 def test_movement_permission_and_map_floor_are_permissioned():

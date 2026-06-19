@@ -93,6 +93,10 @@ Movement requests remain disabled unless both are true:
 GET  /health
 GET  /status
 GET  /config
+GET  /doctor
+GET  /sensors
+POST /data/prune
+GET  /last-seen
 POST /drive
 POST /stop
 POST /expression
@@ -112,6 +116,9 @@ POST /map/remember
 POST /safety/simulate
 POST /hearing/simulate
 POST /vision/snapshot
+POST /vision/motion
+POST /presence/look-around
+POST /presence/remember-room
 ```
 
 ## Autonomy phases implemented

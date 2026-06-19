@@ -17,18 +17,22 @@ from typing import Any
 SAFE_COMMANDS: dict[str, list[str]] = {
     "status": ["cleo-rover", "status"],
     "sensors": ["cleo-rover", "sensors"],
+    "doctor": ["cleo-rover", "doctor"],
     "safe-mode": ["cleo-rover", "safe-mode"],
     "stop": ["cleo-rover", "safe-mode"],
     "estop": ["cleo-rover", "safe-mode"],
     "map": ["cleo-rover", "map"],
     "map-summary": ["cleo-rover", "map-summary"],
+    "last-seen": ["cleo-rover", "last-seen"],
+    "look-around": ["cleo-rover", "look-around"],
+    "motion-check": ["cleo-rover", "motion-check"],
     "movement-status": ["cleo-rover", "movement-status"],
     "presence-tick": ["cleo-rover", "presence-tick", "--cleanup"],
     "situation": ["cleo-rover", "situation"],
     "snapshot": ["cleo-rover", "snapshot"],
 }
 
-SAFE_PREFIX_COMMANDS = {"map-scan", "visual-map-scan", "look-remember", "rgb-mode", "floor-precheck", "floor-map-dry-run"}
+SAFE_PREFIX_COMMANDS = {"map-scan", "visual-map-scan", "look-remember", "remember-room", "rgb-mode", "floor-precheck", "floor-map-dry-run"}
 DANGEROUS_COMMANDS = {"drive", "move-step", "rotate-step", "movement-grant", "map-floor", "dance"}
 ARM_STATE_FILE = "data/telegram_floor_arm.json"
 FLOOR_MODE_STATE_FILE = "data/telegram_floor_mode.json"
@@ -168,11 +172,16 @@ def help_text() -> str:
         "Cleo Rover Telegram agent commands:\n"
         "  /rover status\n"
         "  /rover sensors\n"
+        "  /rover doctor\n"
         "  /rover safe-mode\n"
         "  /rover estop\n"
         "  /rover map\n"
         "  /rover map-summary\n"
+        "  /rover last-seen\n"
         "  /rover situation\n"
+        "  /rover motion-check\n"
+        "  /rover look-around\n"
+        "  /rover remember-room --zone office\n"
         "  /rover floor-precheck --zone living-room\n"
         "  /rover floor-map-dry-run --zone living-room\n"
         "  /rover floor-arm request\n"

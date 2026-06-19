@@ -39,12 +39,24 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status")
     sub.add_parser("stop")
     sub.add_parser("sensors")
+    sub.add_parser("doctor")
     sub.add_parser("events")
     sub.add_parser("autonomy")
     sub.add_parser("tick")
     sub.add_parser("map")
     sub.add_parser("map-summary")
     sub.add_parser("situation")
+    sub.add_parser("last-seen")
+    sub.add_parser("motion-check")
+    sub.add_parser("look-around")
+
+    prune_data = sub.add_parser("prune-data")
+    prune_data.add_argument("--keep-days", type=int, default=30)
+    prune_data.add_argument("--keep-snapshots", type=int, default=500)
+    prune_data.add_argument("--dry-run", action="store_true")
+
+    remember_room = sub.add_parser("remember-room")
+    remember_room.add_argument("--zone", default="room")
     floor_precheck = sub.add_parser("floor-precheck")
     floor_precheck.add_argument("--zone", default="floor")
     floor_precheck.add_argument("--angles", default="-30,0,30")
@@ -146,6 +158,8 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "GET", "/status")
     elif args.cmd == "sensors":
         result = request(args.base, "GET", "/sensors")
+    elif args.cmd == "doctor":
+        result = request(args.base, "GET", "/doctor")
     elif args.cmd == "events":
         result = request(args.base, "GET", "/events/recent")
     elif args.cmd == "map":
@@ -154,6 +168,16 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "GET", "/map/summary")
     elif args.cmd == "situation":
         result = request(args.base, "GET", "/situation")
+    elif args.cmd == "last-seen":
+        result = request(args.base, "GET", "/last-seen")
+    elif args.cmd == "motion-check":
+        result = request(args.base, "POST", "/vision/motion", timeout=30)
+    elif args.cmd == "look-around":
+        result = request(args.base, "POST", "/presence/look-around", timeout=20)
+    elif args.cmd == "remember-room":
+        result = request(args.base, "POST", f"/presence/remember-room?zone={args.zone}", timeout=45)
+    elif args.cmd == "prune-data":
+        result = request(args.base, "POST", f"/data/prune?keep_days={args.keep_days}&keep_snapshots={args.keep_snapshots}&dry_run={str(args.dry_run).lower()}", timeout=60)
     elif args.cmd == "floor-precheck":
         angles = [float(part.strip()) for part in args.angles.split(",") if part.strip()]
         safe = request(args.base, "POST", "/stop")

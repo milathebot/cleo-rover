@@ -20,6 +20,18 @@ def test_parse_safe_situation_and_map_summary_commands():
     assert error is None
     assert argv == ["cleo-rover", "map-summary"]
 
+    argv, error = parse_rover_command("/rover doctor")
+    assert error is None
+    assert argv == ["cleo-rover", "doctor"]
+
+    argv, error = parse_rover_command("/rover last-seen")
+    assert error is None
+    assert argv == ["cleo-rover", "last-seen"]
+
+    argv, error = parse_rover_command("/rover remember-room --zone office")
+    assert error is None
+    assert argv == ["cleo-rover", "remember-room", "--zone", "office"]
+
 
 def test_parse_parameterized_map_scan():
     argv, error = parse_rover_command("/rover map-scan --zone office --angles=-25,0,25")

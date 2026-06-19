@@ -137,3 +137,12 @@ class RoverStore:
             id=row["id"], label=row["label"], kind=row["kind"], zone=row["zone"], bearing_deg=row["bearing_deg"], distance_m=row["distance_m"],
             confidence=row["confidence"], notes=row["notes"], first_seen_at=row["first_seen_at"], last_seen_at=row["last_seen_at"], observations=row["observations"], payload=json.loads(row["payload_json"]),
         ) for row in rows]
+
+    def prune_events(self, *, keep_days: int = 30, dry_run: bool = False) -> dict[str, Any]:
+        cutoff = time.time() - max(1, keep_days) * 86400
+        with self.connect() as con:
+            count = int(con.execute("SELECT COUNT(*) FROM events WHERE timestamp < ?", (cutoff,)).fetchone()[0])
+            if not dry_run:
+                con.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
+                con.execute("VACUUM")
+        return {"ok": True, "deleted_events": count, "keep_days": keep_days, "dry_run": dry_run}
