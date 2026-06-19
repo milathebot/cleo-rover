@@ -23,8 +23,8 @@
   "turret": {
     "driver": "pca9685",
     "i2c_address": "0x40",
-    "pan_channel": 0,
-    "tilt_channel": 1,
+    "pan_channel": 8,
+    "tilt_channel": 9,
     "pan_min_deg": -70,
     "pan_max_deg": 70,
     "tilt_min_deg": -35,

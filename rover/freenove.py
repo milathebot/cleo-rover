@@ -24,7 +24,7 @@ FREENOVE_WHEEL_CHANNELS: dict[str, tuple[int, int]] = {
     "right_lower": (5, 4),
 }
 
-FREENOVE_SERVO_CHANNELS: dict[str, int] = {
+FREENOVE_DEFAULT_SERVO_CHANNELS: dict[str, int] = {
     "pan": 8,   # Freenove Servo0
     "tilt": 9,  # Freenove Servo1
 }
@@ -175,7 +175,7 @@ class FreenoveHardware:
         # Map -80..80 user pan to a conservative servo angle around center.
         angle = int(clamp(90 + command.pan_deg, 10, 170))
         pulse = 500 + int(angle / 0.09)
-        self.pwm.set_servo_pulse_us(FREENOVE_SERVO_CHANNELS["pan"], pulse)
+        self.pwm.set_servo_pulse_us(self.config.turret.pan_channel, pulse)
 
     def close(self) -> None:
         self.stop()
@@ -196,7 +196,10 @@ def freenove_hardware_map(config: RoverConfig) -> dict[str, Any]:
             "channels": {name: list(channels) for name, channels in FREENOVE_WHEEL_CHANNELS.items()},
             "max_duty_cycle": config.motors.max_duty_cycle,
         },
-        "servos": FREENOVE_SERVO_CHANNELS,
+        "servos": {
+            "pan": config.turret.pan_channel,
+            "tilt": config.turret.tilt_channel,
+        },
         "line_sensors_bcm": FREENOVE_LINE_SENSOR_PINS,
         "ultrasonic_bcm": FREENOVE_ULTRASONIC_PINS,
     }

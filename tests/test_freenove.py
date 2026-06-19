@@ -1,4 +1,5 @@
-from rover.freenove import FREENOVE_WHEEL_CHANNELS, drive_to_wheel_duty
+from rover.config import RoverConfig
+from rover.freenove import FREENOVE_DEFAULT_SERVO_CHANNELS, FREENOVE_WHEEL_CHANNELS, drive_to_wheel_duty, freenove_hardware_map
 from rover.models import DriveCommand
 
 
@@ -9,6 +10,12 @@ def test_freenove_channel_map_matches_ordinary_car_board():
         "right_upper": (7, 6),
         "right_lower": (5, 4),
     }
+
+
+def test_freenove_servo_channels_default_to_verified_pan_tilt_channels():
+    assert FREENOVE_DEFAULT_SERVO_CHANNELS == {"pan": 8, "tilt": 9}
+    hardware_map = freenove_hardware_map(RoverConfig())
+    assert hardware_map["servos"] == {"pan": 8, "tilt": 9}
 
 
 def test_drive_to_wheel_duty_forward_is_conservative_positive():

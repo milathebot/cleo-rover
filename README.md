@@ -2,11 +2,11 @@
 
 Body-control service for Cleo Rover Mk1.
 
-The Raspberry Pi 3B+ is the current body controller for the stock Freenove chassis. Hermes/Cleo on the PC is the brain.
+The Raspberry Pi 4B is the current body controller for the stock Freenove chassis. Hermes/Cleo on the PC is the brain.
 
-## What works before hardware arrives
+## What works on the current Pi 4B rover
 
-This repo runs in `sim` mode now:
+This repo runs in safe simulator and hardware-presence modes:
 
 - health/status API
 - drive commands with automatic timeout safety
@@ -36,7 +36,7 @@ This repo runs in `sim` mode now:
 ## Run locally
 
 ```bash
-cd /home/wiffl/projects/cleo-rover
+cd /home/wiffl/cleo-rover
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -e .[dev]
@@ -228,26 +228,31 @@ We do **not** run Freenove's robot app/TCP server for Cleo Rover. The vendor rep
 
 The default max duty cycle is conservative at `0.35`, and real motor output stays disabled until a local config explicitly sets `bench_safe_no_motors: false` and the chassis is lifted for first movement tests.
 
-## Arrival-day checklist
+## Safe setup checklist
 
-When parts arrive:
+For a fresh Pi or after pulling new code:
 
-1. Photograph all labels, boards, included cables, and motor-driver markings.
-2. Confirm the power bank has enough outputs/current for Pi + motor/servo rail.
-3. Boot Pi OS Lite, enable SSH, SPI, I2C, and camera.
-4. Run `scripts/pi_setup.sh` on the Pi.
-5. Start in sim/bench-safe mode first. Do not arm motors yet.
-6. Test `/health`, `/status`, `/config`, and `/expression/preview.png`.
-7. Wire and test the display alone.
-8. Wire and test one motor side with wheels lifted.
-9. Only then enable motor arming in a local config.
+1. Boot Raspberry Pi OS Lite on the Pi 4B and verify SSH.
+2. Enable I2C, SPI, and camera interfaces.
+3. Install/update the repo in `/home/cleo/cleo-rover` and run `pip install -e '.[pi]'` inside the project venv.
+4. Install the main service with `sudo scripts/install_systemd.sh`.
+5. Put the service into no-motor presence mode with `sudo scripts/set_rover_profile.sh presence`.
+6. Verify `/health`, `/status`, `/config`, `/sensors`, and `/vision/snapshot` before any floor movement.
+7. Install the Telegram agent and profile-switch sudoers helper only after local service checks pass.
+8. Use floor-cautious mode only for deliberate floor tests with a clear area and an active movement arm.
 
-## Hardware mode later
+## Hardware mode operating rule
 
-When the parts arrive, we will add concrete drivers for:
+Normal powered-on operation should use the no-motor presence profile:
 
-- Waveshare 2-inch ST7789 screen
-- Freenove 8MP camera stream
-- USB mic/speaker routing
+```bash
+sudo scripts/set_rover_profile.sh presence
+```
 
-The stock Freenove motor/servo board already has a Cleo-native driver scaffold, but it must not be armed until I2C is detected and the wheels are lifted.
+Only switch to the floor-cautious motor profile after the rover is on the floor, the area is clear, and movement is intentionally armed:
+
+```bash
+sudo scripts/set_rover_profile.sh floor-cautious
+```
+
+The stock Freenove motor/servo board has a Cleo-native driver. Motor output must remain gated by profile safety, movement grants, short command durations, and front-distance checks.

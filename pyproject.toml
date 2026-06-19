@@ -1,7 +1,7 @@
 [project]
 name = "cleo-rover"
 version = "0.1.0"
-description = "Cleo Rover Mk1 body-control service for Raspberry Pi Zero 2 W"
+description = "Cleo Rover Mk1 body-control service for Raspberry Pi 4B"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.111",

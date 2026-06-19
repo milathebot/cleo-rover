@@ -39,8 +39,8 @@ class MotorConfig(BaseModel):
 class TurretConfig(BaseModel):
     driver: str = "pca9685"
     i2c_address: str = "0x40"
-    pan_channel: int = 0
-    tilt_channel: int = 1
+    pan_channel: int = 8
+    tilt_channel: int = 9
     pan_min_deg: float = -70
     pan_max_deg: float = 70
     tilt_min_deg: float = -35
