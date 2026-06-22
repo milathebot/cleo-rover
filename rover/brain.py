@@ -138,6 +138,17 @@ def choose_body_intent(snapshot: dict[str, Any], *, zone: str, last_intent: str 
                 "params": {"deg": escape["deg"], "reason": "clearest_scan_after_narrow_path", "bearing_deg": escape["bearing_deg"], "distance_cm": escape["distance_cm"]},
             }
         return {"intent": "mood", "mood": "confused", "speech": "I scanned, but the path is not open enough.", "params": {}}
+    if distance is not None and float(distance) < MIN_FORWARD_CLEAR_CM:
+        escape = choose_escape_turn(last_scan, minimum_clear_cm=60.0, min_improvement_cm=0.0)
+        if escape:
+            direction = "right" if escape["deg"] > 0 else "left"
+            return {
+                "intent": "rotate_step",
+                "mood": "focused",
+                "speech": f"Need more room. Turning {direction}.",
+                "params": {"deg": escape["deg"], "reason": "fallback_clearance_turn", "bearing_deg": escape["bearing_deg"], "distance_cm": escape["distance_cm"]},
+            }
+        return {"intent": "scan", "mood": "thinking", "speech": "Need more room before moving.", "params": {"zone": zone, "angles": [-45, -25, 0, 25, 45]}}
     return {"intent": "move_step", "mood": "focused", "speech": "Tiny step.", "params": {"forward_cm": 3}}
 
 

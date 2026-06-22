@@ -86,7 +86,10 @@ def validate_intent(command: BodyIntentCommand, *, status: dict[str, Any], senso
             return False, "movement intent rejected: bench_safe_no_motors=true"
     if command.intent == "move_step":
         distance = sensors.get("front_distance_cm")
-        threshold = max(70.0, float(sensors.get("front_stop_distance_cm") or 18.0) + 45.0)
+        # Conservative supervised autonomy: only allow forward steps when there
+        # is real clearance. The reflex stop is a last line of defense, not the
+        # normal way to stop near walls.
+        threshold = max(120.0, float(sensors.get("front_stop_distance_cm") or 18.0) + 45.0)
         if distance is None:
             return False, "forward move rejected: front range unknown"
         if float(distance) < threshold:

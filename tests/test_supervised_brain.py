@@ -1,6 +1,6 @@
 from rover.brain import choose_body_intent, choose_escape_turn, extract_scan_result, supervisor_result_summary
 from rover.models import BodyIntentCommand
-from rover.supervisor import intent_to_actions
+from rover.supervisor import intent_to_actions, validate_intent
 
 
 def blocked_snapshot(distance=56.0):
@@ -76,11 +76,18 @@ def test_narrow_path_after_scan_rotates_toward_clear_side():
     assert intent["params"]["reason"] == "clearest_scan_after_narrow_path"
 
 
-def test_narrow_path_without_clear_side_holds_confused():
+def test_narrow_path_without_clear_side_keeps_searching_not_forward():
     scan = scan_result((-35, 58), (-15, 64), (0, 82), (15, 70), (35, 75))
     intent = choose_body_intent(clear_snapshot(82), zone="office", last_intent="scan", last_scan=scan)
-    assert intent["intent"] == "mood"
-    assert intent["mood"] == "confused"
+    assert intent["intent"] in {"mood", "rotate_step", "scan"}
+    assert intent["intent"] != "move_step"
+
+
+def test_after_confused_mood_under_clearance_does_not_default_to_forward():
+    scan = scan_result((-35, 58), (-15, 64), (0, 72), (15, 70), (35, 75))
+    intent = choose_body_intent(clear_snapshot(72), zone="office", last_intent="mood", last_scan=scan)
+    assert intent["intent"] in {"rotate_step", "scan"}
+    assert intent["intent"] != "move_step"
 
 
 def test_supervised_rotate_uses_floor_calibration():
@@ -93,6 +100,24 @@ def test_supervised_move_uses_floor_pulse_not_buzz_tick():
     actions = intent_to_actions(BodyIntentCommand(intent="move_step", mood="focused", params={"forward_cm": 3}))
     drive = next(action for action in actions if action["kind"] == "drive")
     assert drive["command"] == {"linear": 0.34, "turn": 0.0, "duration_ms": 220}
+
+
+def test_supervisor_rejects_forward_under_real_clearance():
+    command = BodyIntentCommand(intent="move_step", mood="focused", params={"forward_cm": 3})
+    status = {"motors_armed": True, "safety": {"bench_safe_no_motors": False}}
+    movement = {"active": True}
+    ok, reason = validate_intent(command, status=status, sensors={"front_distance_cm": 72, "front_stop_distance_cm": 18}, movement=movement)
+    assert ok is False
+    assert "below 120.0cm" in reason
+
+
+def test_supervisor_allows_forward_with_real_clearance():
+    command = BodyIntentCommand(intent="move_step", mood="focused", params={"forward_cm": 3})
+    status = {"motors_armed": True, "safety": {"bench_safe_no_motors": False}}
+    movement = {"active": True}
+    ok, reason = validate_intent(command, status=status, sensors={"front_distance_cm": 134, "front_stop_distance_cm": 18}, movement=movement)
+    assert ok is True
+    assert reason == "intent accepted"
 
 
 def test_extract_scan_result_from_supervisor_response():
