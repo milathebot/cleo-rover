@@ -33,7 +33,7 @@ SAFE_COMMANDS: dict[str, list[str]] = {
     "snapshot": ["cleo-rover", "snapshot"],
 }
 
-SAFE_PREFIX_COMMANDS = {"map-scan", "visual-map-scan", "look-remember", "remember-room", "rgb-mode", "preflight", "floor-precheck", "floor-map-dry-run"}
+SAFE_PREFIX_COMMANDS = {"map-scan", "visual-map-scan", "look-remember", "remember-room", "rgb-mode", "preflight", "floor-precheck", "floor-map-dry-run", "pip"}
 DANGEROUS_COMMANDS = {"drive", "move-step", "rotate-step", "movement-grant", "map-floor", "dance"}
 ARM_STATE_FILE = "data/telegram_floor_arm.json"
 FLOOR_MODE_STATE_FILE = "data/telegram_floor_mode.json"
@@ -196,6 +196,9 @@ def help_text() -> str:
         "  /rover floor-mode presence\n"
         "  /rover floor-mode status\n"
         "  /rover floor-map-run --zone living-room --steps 1  (requires active floor-arm)\n"
+        "  /rover pip status\n"
+        "  /rover pip wake | sleep | quiet | social | assistant\n"
+        "  /rover pip greet | observe | patrol | stop\n"
         "  /rover map-scan --zone office --angles=-25,0,25\n"
         "  /rover visual-map-scan --zone office --angles=-25,0,25\n"
         "  /rover look-remember --zone office --pan 0\n"

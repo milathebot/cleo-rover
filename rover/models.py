@@ -176,6 +176,24 @@ class LittleBeingLoopCommand(BaseModel):
     notes: str | None = Field(default=None, max_length=240)
 
 
+class PipModeCommand(BaseModel):
+    mode: str = Field(default="social", pattern="^(sleep|quiet|social|assistant)$")
+    reason: str | None = Field(default=None, max_length=160)
+
+
+class PipLifeTickCommand(BaseModel):
+    allow_movement: bool = False
+    force: bool = False
+    reason: str = Field(default="life_tick", max_length=80)
+    compact: bool = True
+
+
+class PipCommand(BaseModel):
+    text: str = Field(max_length=240)
+    source: str = Field(default="telegram", max_length=40)
+    allow_movement: bool = False
+
+
 class MoveStepCommand(BaseModel):
     forward_cm: float = Field(default=10.0, ge=-30.0, le=30.0)
     require_permission: bool = True

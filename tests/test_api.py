@@ -229,6 +229,46 @@ def test_little_being_loop_observes_and_uses_reactive_layer_without_movement():
     assert "reactive explore + watchdog" in data["safety"]
 
 
+def test_pip_identity_modes_greet_and_interrupts():
+    state = client.get("/pip/state")
+    assert state.status_code == 200
+    assert state.json()["identity"]["name"] == "Pip"
+    assert state.json()["identity"]["home_base"] == "office"
+
+    quiet = client.post("/pip/mode", json={"mode": "quiet", "reason": "test"})
+    assert quiet.status_code == 200
+    assert quiet.json()["state"]["state"]["mode"] == "quiet"
+
+    greet = client.post("/pip/greet")
+    assert greet.status_code == 200
+    assert greet.json()["line"] == "hi noot."
+
+    rescue = client.post("/pip/rescue-needed?reason=test%20stuck")
+    assert rescue.status_code == 200
+    assert rescue.json()["interrupt"]["kind"] == "rescue"
+
+    interrupts = client.get("/pip/interrupts?mark_delivered=true")
+    assert interrupts.status_code == 200
+    assert interrupts.json()["count"] >= 1
+
+
+def test_pip_life_tick_and_command_router():
+    client.post("/pip/mode", json={"mode": "social", "reason": "test"})
+    tick = client.post("/pip/life-tick", json={"allow_movement": False, "force": False, "reason": "test"})
+    assert tick.status_code == 200
+    assert tick.json()["decision"] in {"observe", "patrol", "low_power", "rescue", "sleep"}
+
+    status = client.post("/pip/command", json={"text": "status", "source": "test"})
+    assert status.status_code == 200
+    assert status.json()["handled"] is True
+    assert status.json()["action"] == "state"
+
+    relay = client.post("/pip/command", json={"text": "what is the weather?", "source": "test"})
+    assert relay.status_code == 200
+    assert relay.json()["handled"] is False
+    assert relay.json()["action"] == "relay_to_hermes"
+
+
 def test_drive_rejected_in_no_motor_profile_and_step_requires_permission():
     drive = client.post("/drive", json={"linear": 0.2, "turn": 0, "duration_ms": 100})
     assert drive.status_code == 200

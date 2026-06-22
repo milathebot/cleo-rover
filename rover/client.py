@@ -71,6 +71,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("movement-revoke")
     sub.add_parser("supervisor-status")
 
+    pip = sub.add_parser("pip")
+    pip.add_argument("text", nargs="*", help="Pip command text: status, wake, sleep, quiet, social, assistant, greet, patrol, observe, stop, or arbitrary question")
+    pip.add_argument("--allow-movement", action="store_true")
+    pip.add_argument("--source", default="cli")
+
     body_intent = sub.add_parser("body-intent")
     body_intent.add_argument("intent", choices=["status", "stop", "scan", "look", "say", "mood", "move_step", "rotate_step", "idle"])
     body_intent.add_argument("--mood", default=None)
@@ -231,6 +236,9 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "POST", "/movement/revoke")
     elif args.cmd == "supervisor-status":
         result = request(args.base, "GET", "/supervisor/status")
+    elif args.cmd == "pip":
+        text = " ".join(args.text).strip() or "status"
+        result = request(args.base, "POST", "/pip/command", {"text": text, "source": args.source, "allow_movement": args.allow_movement}, timeout=60)
     elif args.cmd == "body-intent":
         params = {"zone": args.zone}
         if args.intent == "move_step":

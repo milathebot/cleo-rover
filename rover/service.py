@@ -13,7 +13,7 @@ from .config import load_config
 from .drivers import RoverBody
 from .hub import fetch_hub_snapshot
 from .mapping import map_summary, observation_items, scan_item, semantic_events_from_analysis
-from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
+from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
 from .supervisor import intent_to_actions, supervisor_snapshot, validate_intent
 from .persistence import RoverStore
@@ -28,6 +28,35 @@ events = EventStore()
 store = RoverStore(CONFIG.life_loop.data_path)
 autonomy = AutonomyEngine(CONFIG.life_loop, state=store.load_state(), cooldowns=store.load_cooldowns())
 movement_grant: dict | None = None
+pip_identity = {
+    "name": "Pip",
+    "species": "shy office droid",
+    "home_base": "office",
+    "approved_zones": ["office"],
+    "personality": {
+        "curiosity": 0.75,
+        "shyness": 0.70,
+        "boldness": 0.55,
+        "talkativeness": 0.25,
+        "cat_respect": 0.95,
+        "helpfulness": 0.60,
+        "independence": 0.70,
+    },
+}
+pip_state = {
+    "mode": "social",
+    "awake": True,
+    "home_base": "office",
+    "current_zone": "office",
+    "last_greet_at": None,
+    "last_patrol_at": None,
+    "last_observe_at": None,
+    "last_rescue_at": None,
+    "last_life_tick_at": None,
+    "boredom": 0.35,
+    "mood": "curious",
+}
+pip_interrupts: list[dict] = []
 
 app = FastAPI(title="Cleo Rover Mk1 Body Service", version="0.1.0")
 
@@ -669,6 +698,234 @@ def plan_summary(plan: list[dict]) -> dict:
 
 def compact_plan(plan: list[dict]) -> list[dict]:
     return [compact_action(item) for item in plan]
+
+
+def pip_enqueue_interrupt(priority: str, message: str, *, kind: str = "note", payload: dict | None = None) -> dict:
+    item = {
+        "id": f"pip-{int(time.time() * 1000)}",
+        "priority": priority,
+        "kind": kind,
+        "message": message,
+        "payload": payload or {},
+        "timestamp": time.time(),
+        "delivered": False,
+    }
+    pip_interrupts.append(item)
+    del pip_interrupts[:-50]
+    remember_event(RoverEvent(kind=RoverEventKind.manual_control, source="pip", label=f"interrupt:{kind}", payload=item))
+    return item
+
+
+def pip_public_state() -> dict:
+    sensors_now = body.sensors()
+    battery = battery_safety_summary(sensors_now)
+    pending = [item for item in pip_interrupts if not item.get("delivered")]
+    return {
+        "ok": True,
+        "identity": pip_identity,
+        "state": pip_state,
+        "battery": battery,
+        "movement": movement_status(),
+        "sensors": {
+            "front_distance_cm": sensors_now.get("front_distance_cm"),
+            "last_reflex_stop": (sensors_now.get("motors") or {}).get("last_reflex_stop"),
+            "errors": sensors_now.get("errors"),
+        },
+        "pending_interrupts": len(pending),
+        "capabilities": [
+            "office_home_base",
+            "modes:sleep|quiet|social|assistant",
+            "greet",
+            "rescue_request",
+            "bored_patrol",
+            "reactive_explore",
+            "vision_awareness",
+            "telegram_or_voice_command_bridge",
+        ],
+    }
+
+
+def pip_can_autonomously_move(*, allow_movement: bool, battery: dict) -> tuple[bool, str]:
+    if not allow_movement:
+        return False, "movement not allowed by request"
+    if pip_state["mode"] == "sleep":
+        return False, "Pip is sleeping"
+    if pip_state["mode"] == "quiet":
+        return False, "Pip is quiet; observation only"
+    if pip_state.get("current_zone") not in pip_identity["approved_zones"]:
+        return False, "current zone is not approved"
+    if battery["recommendation"] == "charge_before_movement":
+        return False, "battery says charge before movement"
+    return True, "movement allowed"
+
+
+async def pip_set_expression(mode: ExpressionMode, text: str, brightness: float = 0.55) -> None:
+    await body.set_expression(ExpressionCommand(mode=mode, text=text, brightness=brightness))
+
+
+async def pip_rescue(message: str, *, priority: str = "medium", payload: dict | None = None) -> dict:
+    await body.stop()
+    pip_state["last_rescue_at"] = time.time()
+    pip_state["mood"] = "confused"
+    await pip_set_expression(ExpressionMode.confused, "help?", 0.55)
+    interrupt = pip_enqueue_interrupt(priority, message, kind="rescue", payload=payload)
+    return {"ok": True, "rescued": False, "interrupt": interrupt, "state": pip_public_state()}
+
+
+def pip_should_patrol(*, force: bool = False) -> tuple[bool, str]:
+    if force:
+        return True, "forced"
+    now = time.time()
+    last = pip_state.get("last_patrol_at")
+    if last and now - float(last) < 600:
+        return False, "patrol cooldown active"
+    if float(pip_state.get("boredom", 0)) < 0.6:
+        return False, "not bored enough"
+    return True, "bored and curious"
+
+
+@app.get("/pip/state")
+def pip_state_endpoint() -> dict:
+    return pip_public_state()
+
+
+@app.post("/pip/mode")
+async def pip_mode(command: PipModeCommand) -> dict:
+    pip_state["mode"] = command.mode
+    pip_state["awake"] = command.mode != "sleep"
+    pip_state["mood"] = "sleeping" if command.mode == "sleep" else "curious"
+    if command.mode == "sleep":
+        await body.stop()
+        await pip_set_expression(ExpressionMode.sleeping, "sleep", 0.25)
+    elif command.mode == "quiet":
+        await pip_set_expression(ExpressionMode.watching, "quiet", 0.35)
+    elif command.mode == "assistant":
+        await pip_set_expression(ExpressionMode.listening, "listening", 0.55)
+    else:
+        await pip_set_expression(ExpressionMode.curious, "pip", 0.55)
+    event = remember_event(RoverEvent(kind=RoverEventKind.manual_control, source="pip", label=f"mode:{command.mode}", payload={"mode": command.mode, "reason": command.reason}))
+    return {"ok": True, "mode": command.mode, "event": event.model_dump(), "state": pip_public_state()}
+
+
+@app.post("/pip/wake")
+async def pip_wake() -> dict:
+    return await pip_mode(PipModeCommand(mode="social", reason="wake requested"))
+
+
+@app.post("/pip/sleep")
+async def pip_sleep() -> dict:
+    return await pip_mode(PipModeCommand(mode="sleep", reason="sleep requested"))
+
+
+@app.post("/pip/greet")
+async def pip_greet(source: str = "operator") -> dict:
+    pip_state["last_greet_at"] = time.time()
+    pip_state["boredom"] = max(0.0, float(pip_state.get("boredom", 0)) - 0.2)
+    pip_state["mood"] = "happy"
+    await pip_set_expression(ExpressionMode.happy, "hi noot", 0.6)
+    rgb_result = rgb(RGBCommand(red=90, green=180, blue=255, brightness=28))
+    event = remember_event(RoverEvent(kind=RoverEventKind.manual_control, source="pip", label="greet", payload={"source": source, "line": "hi noot."}))
+    return {"ok": True, "line": "hi noot.", "rgb": rgb_result, "event": event.model_dump(), "state": pip_public_state()}
+
+
+@app.post("/pip/rescue-needed")
+async def pip_rescue_needed(reason: str = "I found a corner and need help.") -> dict:
+    return await pip_rescue(f"um... {reason}", priority="high", payload={"reason": reason})
+
+
+@app.get("/pip/interrupts")
+def pip_interrupt_list(mark_delivered: bool = False) -> dict:
+    pending = [item for item in pip_interrupts if not item.get("delivered")]
+    if mark_delivered:
+        for item in pending:
+            item["delivered"] = True
+    return {"ok": True, "interrupts": pending, "count": len(pending)}
+
+
+@app.post("/pip/life-tick")
+async def pip_life_tick(command: PipLifeTickCommand) -> dict:
+    pip_state["last_life_tick_at"] = time.time()
+    sensors_now = body.sensors()
+    battery = battery_safety_summary(sensors_now)
+    actions: list[dict] = []
+
+    if pip_state["mode"] == "sleep" and not command.force:
+        await pip_set_expression(ExpressionMode.sleeping, "sleep", 0.22)
+        return {"ok": True, "decision": "sleep", "reason": "Pip is sleeping", "battery": battery, "actions": actions, "state": pip_public_state()}
+
+    if battery["recommendation"] == "charge_before_movement":
+        result = await pip_rescue("my battery feels too low for exploring. please charge me?", priority="medium", payload={"battery": battery})
+        return {"ok": True, "decision": "low_power", "battery": battery, "actions": [result], "state": pip_public_state()}
+
+    front = sensors_now.get("front_distance_cm")
+    if front is not None and float(front) < 30:
+        result = await pip_rescue(f"something is very close in front of me ({float(front):.1f}cm).", priority="high", payload={"front_distance_cm": front})
+        return {"ok": True, "decision": "rescue", "battery": battery, "actions": [result], "state": pip_public_state()}
+
+    movement_allowed, movement_reason = pip_can_autonomously_move(allow_movement=command.allow_movement, battery=battery)
+    should_patrol, patrol_reason = pip_should_patrol(force=command.force)
+    if should_patrol and pip_state["mode"] in {"social", "assistant"}:
+        loop = await little_being_loop(
+            LittleBeingLoopCommand(
+                zone=str(pip_state.get("current_zone") or "office"),
+                allow_movement=movement_allowed,
+                duration_seconds=45,
+                explore_cycles=6,
+                observe_every_cycles=3,
+                capture_vision=True,
+                compact=True,
+                mood="curious",
+                notes=f"pip life tick patrol: {command.reason}; {movement_reason}",
+            )
+        )
+        pip_state["last_patrol_at"] = time.time()
+        pip_state["boredom"] = 0.15
+        actions.append({"kind": "patrol", "movement_allowed": movement_allowed, "reason": patrol_reason, "result": loop.get("summary")})
+        reactive = (loop.get("summary") or {}).get("reactive") or {}
+        if reactive.get("corner_trap") or reactive.get("reflex_stop"):
+            actions.append(await pip_rescue("I got stuck during my patrol. can you rescue me?", priority="high", payload={"reactive": reactive}))
+        return {"ok": True, "decision": "patrol", "battery": battery, "actions": actions, "state": pip_public_state()}
+
+    pip_state["boredom"] = min(1.0, float(pip_state.get("boredom", 0)) + (0.18 if pip_state["mode"] in {"social", "assistant"} else 0.06))
+    await pip_set_expression(ExpressionMode.watching if pip_state["mode"] == "quiet" else ExpressionMode.curious, "watching", 0.45)
+    observe = await vision_awareness_task(VisionAwarenessCommand(zone=str(pip_state.get("current_zone") or "office"), capture=False, scan=True, compact=True, notes="pip life tick quiet observation"))
+    pip_state["last_observe_at"] = time.time()
+    actions.append({"kind": "observe", "reason": patrol_reason, "scan_summary": observe.get("scan_summary")})
+    return {"ok": True, "decision": "observe", "battery": battery, "actions": actions, "state": pip_public_state()}
+
+
+@app.post("/pip/command")
+async def pip_command(command: PipCommand) -> dict:
+    text = command.text.strip().lower()
+    if text in {"status", "pip status", "where are you", "pip where are you"}:
+        return {"ok": True, "handled": True, "action": "state", "state": pip_public_state()}
+    if text in {"wake", "pip wake", "hi pip", "hello pip"}:
+        return {"ok": True, "handled": True, "action": "wake", "result": await pip_wake()}
+    if text in {"sleep", "pip sleep"}:
+        return {"ok": True, "handled": True, "action": "sleep", "result": await pip_sleep()}
+    if text in {"quiet", "pip quiet"}:
+        return {"ok": True, "handled": True, "action": "mode", "result": await pip_mode(PipModeCommand(mode="quiet", reason=f"{command.source} command"))}
+    if text in {"social", "pip social"}:
+        return {"ok": True, "handled": True, "action": "mode", "result": await pip_mode(PipModeCommand(mode="social", reason=f"{command.source} command"))}
+    if text in {"assistant", "pip assistant"}:
+        return {"ok": True, "handled": True, "action": "mode", "result": await pip_mode(PipModeCommand(mode="assistant", reason=f"{command.source} command"))}
+    if text in {"greet", "pip greet"}:
+        return {"ok": True, "handled": True, "action": "greet", "result": await pip_greet(source=command.source)}
+    if text in {"patrol", "pip patrol", "explore", "pip explore"}:
+        return {"ok": True, "handled": True, "action": "life_tick", "result": await pip_life_tick(PipLifeTickCommand(allow_movement=command.allow_movement, force=True, reason=f"{command.source} patrol command"))}
+    if text in {"observe", "pip observe", "look around", "pip look around"}:
+        return {"ok": True, "handled": True, "action": "observe", "result": await vision_awareness_task(VisionAwarenessCommand(zone="office", capture=True, scan=True, compact=True, notes=f"{command.source} observe command"))}
+    if text in {"stop", "pip stop"}:
+        await body.stop()
+        return {"ok": True, "handled": True, "action": "stop", "stopped": True}
+    return {
+        "ok": True,
+        "handled": False,
+        "action": "relay_to_hermes",
+        "prompt": command.text,
+        "context": pip_public_state(),
+        "note": "Telegram/voice bridge should relay this prompt to Hermes, then speak/display the response as Pip.",
+    }
 
 
 @app.get("/supervisor/status")

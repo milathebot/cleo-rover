@@ -43,6 +43,16 @@ def test_parse_parameterized_map_scan():
     assert argv == ["cleo-rover", "map-scan", "--zone", "office", "--angles=-25,0,25"]
 
 
+def test_parse_pip_safe_commands():
+    argv, error = parse_rover_command("/rover pip status")
+    assert error is None
+    assert argv == ["cleo-rover", "pip", "status"]
+
+    argv, error = parse_rover_command("/rover pip observe")
+    assert error is None
+    assert argv == ["cleo-rover", "pip", "observe"]
+
+
 def test_parse_floor_precheck_and_estop():
     argv, error = parse_rover_command("/rover floor-precheck --zone living-room")
     assert error is None
