@@ -86,7 +86,7 @@ def validate_intent(command: BodyIntentCommand, *, status: dict[str, Any], senso
             return False, "movement intent rejected: bench_safe_no_motors=true"
     if command.intent == "move_step":
         distance = sensors.get("front_distance_cm")
-        threshold = max(45.0, float(sensors.get("front_stop_distance_cm") or 18.0) + 20.0)
+        threshold = max(70.0, float(sensors.get("front_stop_distance_cm") or 18.0) + 45.0)
         if distance is None:
             return False, "forward move rejected: front range unknown"
         if float(distance) < threshold:
@@ -109,8 +109,8 @@ def intent_to_actions(command: BodyIntentCommand) -> list[dict[str, Any]]:
         actions.append({"kind": "turret", "command": TurretCommand(pan_deg=float(p.get("pan_deg", 0))).model_dump()})
     elif command.intent == "move_step":
         forward_cm = max(-12.0, min(12.0, float(p.get("forward_cm", 8))))
-        linear = 0.34 if forward_cm >= 0 else -0.30
-        duration = int(min(320, max(160, abs(forward_cm) * 28)))
+        linear = 0.30 if forward_cm >= 0 else -0.26
+        duration = int(min(240, max(120, abs(forward_cm) * 24)))
         actions.append({"kind": "drive", "command": DriveCommand(linear=linear, turn=0, duration_ms=duration).model_dump()})
     elif command.intent == "rotate_step":
         deg = max(-25.0, min(25.0, float(p.get("deg", 15))))

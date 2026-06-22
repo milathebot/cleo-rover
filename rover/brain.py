@@ -24,21 +24,24 @@ def request(base: str, method: str, path: str, payload: dict[str, Any] | None = 
         return json.loads(resp.read().decode())
 
 
-def choose_body_intent(snapshot: dict[str, Any], *, zone: str) -> dict[str, Any]:
-    """Tiny PC/Hermes-side policy: choose one high-level intent, never raw motor duty."""
+def choose_body_intent(snapshot: dict[str, Any], *, zone: str, last_intent: str | None = None) -> dict[str, Any]:
+    """Tiny PC/Hermes-side policy: scan often, move rarely, never raw motor duty."""
     flags = set(snapshot.get("safety_flags") or [])
     range_state = (snapshot.get("range_state") or {}).get("state")
     sensors = snapshot.get("sensors") or {}
     status = snapshot.get("status") or {}
+    distance = sensors.get("front_distance_cm")
     if flags & {"inconsistent_motor_safety", "sensor_errors"}:
-        return {"intent": "stop", "mood": "alert", "speech": "I am stopping because my safety checks are unhappy.", "params": {}}
-    if range_state in {"blocked", "near"}:
-        return {"intent": "rotate_step", "mood": "confused", "speech": "Path is tight. I am turning instead of pushing forward.", "params": {"deg": 18}}
+        return {"intent": "stop", "mood": "alert", "speech": "Safety check failed. Stopping.", "params": {}}
+    if range_state in {"blocked", "near"} or (distance is not None and float(distance) < 70.0):
+        return {"intent": "rotate_step", "mood": "confused", "speech": "Too close. Turning.", "params": {"deg": 14}}
     if sensors.get("front_distance_cm") is None:
-        return {"intent": "scan", "mood": "thinking", "speech": "I need a better range read before moving.", "params": {"zone": zone, "angles": [-45, -20, 0, 20, 45]}}
+        return {"intent": "scan", "mood": "thinking", "speech": "Need range before moving.", "params": {"zone": zone, "angles": [-45, -20, 0, 20, 45]}}
     if not status.get("motors_armed"):
-        return {"intent": "scan", "mood": "thinking", "speech": "I can look around, but motors are not armed.", "params": {"zone": zone, "angles": [-35, 0, 35]}}
-    return {"intent": "move_step", "mood": "focused", "speech": "Open floor ahead. Taking one tiny step.", "params": {"forward_cm": 8}}
+        return {"intent": "scan", "mood": "thinking", "speech": "Motors are not armed.", "params": {"zone": zone, "angles": [-35, 0, 35]}}
+    if last_intent == "move_step":
+        return {"intent": "scan", "mood": "thinking", "speech": "Checking path.", "params": {"zone": zone, "angles": [-35, -15, 0, 15, 35]}}
+    return {"intent": "move_step", "mood": "focused", "speech": "Tiny step.", "params": {"forward_cm": 3}}
 
 
 class BrainLoop:
@@ -51,6 +54,7 @@ class BrainLoop:
         self.supervised_body = supervised_body
         self.zone = zone
         self.running = True
+        self.last_intent: str | None = None
 
     def stop(self, *_args) -> None:
         self.running = False
@@ -58,10 +62,11 @@ class BrainLoop:
     def once(self) -> dict[str, Any]:
         if self.supervised_body:
             snapshot = request(self.base, "GET", "/supervisor/status", timeout=8)
-            intent = choose_body_intent(snapshot, zone=self.zone)
+            intent = choose_body_intent(snapshot, zone=self.zone, last_intent=self.last_intent)
             if not self.allow_movement and intent["intent"] in {"move_step", "rotate_step"}:
                 intent = {"intent": "scan", "mood": "thinking", "speech": "Movement is disabled from the PC brain.", "params": {"zone": self.zone, "angles": [-35, 0, 35]}}
             result = request(self.base, "POST", "/supervisor/intent", intent | {"source": "pc_brain"}, timeout=30)
+            self.last_intent = intent["intent"] if result.get("accepted") else None
             return {"ok": True, "snapshot": snapshot, "intent": intent, "result": result}
         request(self.base, "POST", "/heartbeat", timeout=5)
         status = request(self.base, "GET", "/status", timeout=5)
