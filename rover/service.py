@@ -11,6 +11,7 @@ from .autonomy import AutonomyEngine, EventStore
 from .awareness import capture_motion_pair, doctor_report, last_seen_summary, prune_capture_dir, range_state_from_samples
 from .config import load_config
 from .drivers import RoverBody
+from .hermes_bridge import ask_hermes_as_pip, hermes_configured
 from .hub import fetch_hub_snapshot
 from .mapping import map_summary, observation_items, scan_item, semantic_events_from_analysis
 from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
@@ -963,6 +964,17 @@ async def pip_life_tick(command: PipLifeTickCommand) -> dict:
     return {"ok": True, "decision": "observe", "battery": battery, "actions": actions, "state": pip_public_state()}
 
 
+@app.get("/pip/hermes-bridge")
+def pip_hermes_bridge_status() -> dict:
+    return {
+        "ok": True,
+        "configured": hermes_configured(),
+        "base": os.getenv("HERMES_API_BASE", ""),
+        "model": os.getenv("HERMES_MODEL", "hermes-agent"),
+        "speak_response": os.getenv("HERMES_PIP_SPEAK_RESPONSE", "true"),
+    }
+
+
 @app.post("/pip/command")
 async def pip_command(command: PipCommand) -> dict:
     text = command.text.strip().lower()
@@ -987,13 +999,23 @@ async def pip_command(command: PipCommand) -> dict:
     if text in {"stop", "pip stop"}:
         await body.stop()
         return {"ok": True, "handled": True, "action": "stop", "stopped": True}
+    hermes = ask_hermes_as_pip(command.text, context=pip_public_state())
+    if hermes.get("ok"):
+        answer = str(hermes.get("answer") or "").strip()
+        pip_state["mood"] = "happy" if any(word in answer.lower() for word in ["hi", "ready", "good", "happy"]) else "curious"
+        await pip_set_expression(ExpressionMode.speaking, "pip", 0.55)
+        speech = speak_text(answer) if os.getenv("HERMES_PIP_SPEAK_RESPONSE", "true").lower() not in {"0", "false", "no"} else {"ok": True, "skipped": True}
+        event = remember_event(RoverEvent(kind=RoverEventKind.speech, source="pip_hermes_bridge", label="pip reply", payload={"prompt": command.text, "answer": answer, "speech": speech, "usage": hermes.get("raw_usage")}))
+        save_pip_runtime()
+        return {"ok": True, "handled": True, "action": "hermes_reply", "answer": answer, "speech": speech, "event": event.model_dump(), "state": pip_public_state()}
     return {
         "ok": True,
         "handled": False,
         "action": "relay_to_hermes",
         "prompt": command.text,
         "context": pip_public_state(),
-        "note": "Telegram/voice bridge should relay this prompt to Hermes, then speak/display the response as Pip.",
+        "bridge": hermes,
+        "note": "Set HERMES_API_BASE/HERMES_API_KEY on cleo-rover-body to let Pip ask Hermes automatically, then speak the answer.",
     }
 
 

@@ -70,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("movement-status")
     sub.add_parser("movement-revoke")
     sub.add_parser("supervisor-status")
+    sub.add_parser("pip-bridge-status")
 
     pip = sub.add_parser("pip")
     pip.add_argument("text", nargs="*", help="Pip command text: status, wake, sleep, quiet, social, assistant, greet, patrol, observe, stop, or arbitrary question")
@@ -237,6 +238,8 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "POST", "/movement/revoke")
     elif args.cmd == "supervisor-status":
         result = request(args.base, "GET", "/supervisor/status")
+    elif args.cmd == "pip-bridge-status":
+        result = request(args.base, "GET", "/pip/hermes-bridge")
     elif args.cmd == "pip":
         text = " ".join(args.text).strip() or "status"
         result = request(args.base, "POST", "/pip/command", {"text": text, "source": args.source, "allow_movement": args.allow_movement}, timeout=60)
