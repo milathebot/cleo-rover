@@ -17,7 +17,7 @@ class DisplayConfig(BaseModel):
     spi_bus: int = 0
     spi_device: int = 0
     dc_pin: int | None = 25
-    reset_pin: int | None = 24
+    reset_pin: int | None = 5
     backlight_pin: int | None = None
 
 

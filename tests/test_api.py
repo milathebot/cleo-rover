@@ -30,7 +30,7 @@ def test_config_endpoint():
     assert data["turret"]["pan_channel"] == 8
     assert data["turret"]["tilt_channel"] == 9
     assert data["display"]["dc_pin"] == 25
-    assert data["display"]["reset_pin"] == 24
+    assert data["display"]["reset_pin"] == 5
     assert data["display"].get("backlight_pin") is None
     assert data["sensors"]["ultrasonic_trigger_pin"] == 27
     assert data["safety"]["bench_safe_no_motors"] is True

@@ -239,7 +239,7 @@ We do **not** run Freenove's robot app/TCP server for Cleo Rover. The vendor rep
 - pan/tilt servos: channels `8/9`
 - line sensors BCM pins: `14/15/23`
 - ultrasonic BCM pins: trigger `27`, echo `22`
-- Waveshare 2-inch ST7789V display over SPI0: DIN/MOSI `10`, CLK/SCLK `11`, CS/CE0 `8`, DC `25`, RST `24`, BL wired to `3.3V` by default (`backlight_pin: null`)
+- Waveshare 2-inch ST7789V display over SPI0: DIN/MOSI `10`, CLK/SCLK `11`, CS/CE0 `8`, DC `25`, RST `5`, BL wired to `3.3V` by default (`backlight_pin: null`)
 
 The default max duty cycle is conservative at `0.35`, and real motor output stays disabled until a local config explicitly sets `bench_safe_no_motors: false` and the chassis is lifted for first movement tests.
 

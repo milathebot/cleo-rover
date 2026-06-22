@@ -328,7 +328,7 @@ def preflight(mode: str = "presence") -> dict:
     add("sensors_shape", isinstance(sensors_now, dict) and "errors" in sensors_now, "sensor snapshot returned")
     conflicts = gpio_pin_conflicts()
     add("gpio_pin_conflicts", not conflicts, f"conflicts={conflicts}" if conflicts else "no duplicate GPIO claims")
-    add("display_pin_map", CONFIG.display.dc_pin == 25 and CONFIG.display.reset_pin == 24, f"ST7789 DC=GPIO{CONFIG.display.dc_pin}, RST=GPIO{CONFIG.display.reset_pin}, BL={'3.3V/manual' if CONFIG.display.backlight_pin is None else 'GPIO' + str(CONFIG.display.backlight_pin)}")
+    add("display_pin_map", CONFIG.display.dc_pin == 25 and CONFIG.display.reset_pin == 5, f"ST7789 DC=GPIO{CONFIG.display.dc_pin}, RST=GPIO{CONFIG.display.reset_pin}, BL={'3.3V/manual' if CONFIG.display.backlight_pin is None else 'GPIO' + str(CONFIG.display.backlight_pin)}")
 
     if mode in {"presence", "boot", "safe"}:
         add("no_motor_profile", status_now.get("motors_armed") is False, "motors must be unarmed for presence/boot")
