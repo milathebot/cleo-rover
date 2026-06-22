@@ -41,6 +41,14 @@ def should_reflex_stop(command: DriveCommand, sensors: dict[str, Any], *, thresh
     return False, None
 
 
+def display_spi_pins(bus: int, device: int, cs_pin: int | None = None) -> dict[str, int | None]:
+    if bus == 1:
+        chip_selects = {0: 18, 1: 17, 2: 16}
+        return {"din_mosi": 20, "clk_sclk": 21, "cs": cs_pin if cs_pin is not None else chip_selects.get(device)}
+    chip_selects = {0: 8, 1: 7}
+    return {"din_mosi": 10, "clk_sclk": 11, "cs": cs_pin if cs_pin is not None else chip_selects.get(device)}
+
+
 class RoverBody:
     """Hardware abstraction.
 
@@ -224,10 +232,7 @@ class RoverBody:
                 "size": [self.config.display.width, self.config.display.height],
                 "rotation": self.config.display.rotation,
                 "spi": [self.config.display.spi_bus, self.config.display.spi_device],
-                "pins": {
-                    "din_mosi": 10,
-                    "clk_sclk": 11,
-                    "cs_ce0": 8 if self.config.display.spi_device == 0 else 7,
+                "pins": display_spi_pins(self.config.display.spi_bus, self.config.display.spi_device, self.config.display.cs_pin) | {
                     "dc": self.config.display.dc_pin,
                     "rst": self.config.display.reset_pin,
                     "bl": self.config.display.backlight_pin,

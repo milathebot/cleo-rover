@@ -29,6 +29,9 @@ def test_config_endpoint():
     assert data["motors"]["i2c_address"] == "0x40"
     assert data["turret"]["pan_channel"] == 8
     assert data["turret"]["tilt_channel"] == 9
+    assert data["display"]["spi_bus"] == 1
+    assert data["display"]["spi_device"] == 0
+    assert data["display"]["cs_pin"] == 6
     assert data["display"]["dc_pin"] == 25
     assert data["display"]["reset_pin"] == 5
     assert data["display"].get("backlight_pin") is None

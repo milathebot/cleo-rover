@@ -239,7 +239,7 @@ We do **not** run Freenove's robot app/TCP server for Cleo Rover. The vendor rep
 - pan/tilt servos: channels `8/9`
 - line sensors BCM pins: `14/15/23`
 - ultrasonic BCM pins: trigger `27`, echo `22`
-- Waveshare 2-inch ST7789V display over SPI0: DIN/MOSI `10`, CLK/SCLK `11`, CS/CE0 `8`, DC `25`, RST `5`, BL wired to `3.3V` by default (`backlight_pin: null`)
+- Waveshare 2-inch ST7789V display over SPI1 because the Freenove connection board occupies the first 20 physical pins: DIN/MOSI `20`, CLK/SCLK `21`, manual CS `6`, DC `25`, RST `5`, BL wired to `3.3V`/module power by default (`backlight_pin: null`)
 
 The default max duty cycle is conservative at `0.35`, and real motor output stays disabled until a local config explicitly sets `bench_safe_no_motors: false` and the chassis is lifted for first movement tests.
 
@@ -248,7 +248,7 @@ The default max duty cycle is conservative at `0.35`, and real motor output stay
 For a fresh Pi or after pulling new code:
 
 1. Boot Raspberry Pi OS Lite on the Pi 4B and verify SSH.
-2. Enable I2C, SPI, and camera interfaces.
+2. Enable I2C, SPI, camera interfaces, and SPI1 for the display with `sudo scripts/enable_spi1_display.sh` then reboot.
 3. Install/update the repo in `/home/cleo/cleo-rover` and run `pip install -e '.[pi]'` inside the project venv.
 4. Install the main service with `sudo scripts/install_systemd.sh`.
 5. Verify the display safely with `cleo-rover display-test` after the ST7789 display is wired.

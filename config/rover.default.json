@@ -6,8 +6,9 @@
     "width": 240,
     "height": 320,
     "rotation": 180,
-    "spi_bus": 0,
+    "spi_bus": 1,
     "spi_device": 0,
+    "cs_pin": 6,
     "dc_pin": 25,
     "reset_pin": 5,
     "backlight_pin": null

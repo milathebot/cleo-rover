@@ -84,6 +84,14 @@ def gpio_pin_claims() -> dict[int, list[str]]:
         if pin is not None:
             claims.setdefault(pin, []).append(label)
 
+    if CONFIG.display.spi_bus == 1:
+        claim(20, "display.din_mosi")
+        claim(21, "display.clk_sclk")
+        claim(CONFIG.display.cs_pin if CONFIG.display.cs_pin is not None else {0: 18, 1: 17, 2: 16}.get(CONFIG.display.spi_device), "display.cs")
+    else:
+        claim(10, "display.din_mosi")
+        claim(11, "display.clk_sclk")
+        claim(CONFIG.display.cs_pin if CONFIG.display.cs_pin is not None else {0: 8, 1: 7}.get(CONFIG.display.spi_device), "display.cs")
     claim(CONFIG.display.dc_pin, "display.dc")
     claim(CONFIG.display.reset_pin, "display.rst")
     claim(CONFIG.display.backlight_pin, "display.bl")
@@ -328,7 +336,7 @@ def preflight(mode: str = "presence") -> dict:
     add("sensors_shape", isinstance(sensors_now, dict) and "errors" in sensors_now, "sensor snapshot returned")
     conflicts = gpio_pin_conflicts()
     add("gpio_pin_conflicts", not conflicts, f"conflicts={conflicts}" if conflicts else "no duplicate GPIO claims")
-    add("display_pin_map", CONFIG.display.dc_pin == 25 and CONFIG.display.reset_pin == 5, f"ST7789 DC=GPIO{CONFIG.display.dc_pin}, RST=GPIO{CONFIG.display.reset_pin}, BL={'3.3V/manual' if CONFIG.display.backlight_pin is None else 'GPIO' + str(CONFIG.display.backlight_pin)}")
+    add("display_pin_map", CONFIG.display.spi_bus == 1 and CONFIG.display.spi_device == 0 and CONFIG.display.cs_pin == 6 and CONFIG.display.dc_pin == 25 and CONFIG.display.reset_pin == 5, f"ST7789 SPI{CONFIG.display.spi_bus}.{CONFIG.display.spi_device}: DIN=GPIO20, CLK=GPIO21, CS=GPIO{CONFIG.display.cs_pin}, DC=GPIO{CONFIG.display.dc_pin}, RST=GPIO{CONFIG.display.reset_pin}, BL={'3.3V/manual' if CONFIG.display.backlight_pin is None else 'GPIO' + str(CONFIG.display.backlight_pin)}")
 
     if mode in {"presence", "boot", "safe"}:
         add("no_motor_profile", status_now.get("motors_armed") is False, "motors must be unarmed for presence/boot")

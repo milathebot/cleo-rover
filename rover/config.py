@@ -14,8 +14,9 @@ class DisplayConfig(BaseModel):
     width: int = 240
     height: int = 320
     rotation: int = 180
-    spi_bus: int = 0
+    spi_bus: int = 1
     spi_device: int = 0
+    cs_pin: int | None = 6
     dc_pin: int | None = 25
     reset_pin: int | None = 5
     backlight_pin: int | None = None

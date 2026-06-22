@@ -59,6 +59,7 @@ class ST7789Display:
         self._dc: Any | None = None
         self._rst: Any | None = None
         self._bl: Any | None = None
+        self._cs: Any | None = None
         try:
             import spidev  # type: ignore
             from gpiozero import OutputDevice  # type: ignore
@@ -68,10 +69,14 @@ class ST7789Display:
                 self._rst = OutputDevice(config.reset_pin, active_high=True, initial_value=True)
             if config.backlight_pin is not None:
                 self._bl = OutputDevice(config.backlight_pin, active_high=True, initial_value=True)
+            if config.cs_pin is not None:
+                self._cs = OutputDevice(config.cs_pin, active_high=False, initial_value=False)
             spi = spidev.SpiDev()
             spi.open(config.spi_bus, config.spi_device)
             spi.max_speed_hz = 40_000_000
             spi.mode = 0
+            if config.cs_pin is not None:
+                spi.no_cs = True
             self._spi = spi
             self._reset()
             self._init_panel()
@@ -94,11 +99,17 @@ class ST7789Display:
         if self._spi is None or self._dc is None:
             raise RuntimeError("display SPI/DC not initialized")
         self._dc.on() if data else self._dc.off()
-        if isinstance(values, bytes):
-            for start in range(0, len(values), 4096):
-                self._spi.writebytes2(values[start : start + 4096])
-        else:
-            self._spi.writebytes(values)
+        if self._cs is not None:
+            self._cs.on()
+        try:
+            if isinstance(values, bytes):
+                for start in range(0, len(values), 4096):
+                    self._spi.writebytes2(values[start : start + 4096])
+            else:
+                self._spi.writebytes(values)
+        finally:
+            if self._cs is not None:
+                self._cs.off()
 
     def _cmd(self, command: int, data: list[int] | bytes | None = None) -> None:
         self._write([command], data=False)
@@ -151,7 +162,7 @@ class ST7789Display:
             return DisplayResult(ok=False, ready=False, reason=self.last_error)
 
     def close(self) -> None:
-        for device in (self._bl, self._rst, self._dc):
+        for device in (self._bl, self._cs, self._rst, self._dc):
             try:
                 if device is not None:
                     device.close()
@@ -166,3 +177,4 @@ class ST7789Display:
         self._dc = None
         self._rst = None
         self._bl = None
+        self._cs = None
