@@ -109,13 +109,13 @@ def intent_to_actions(command: BodyIntentCommand) -> list[dict[str, Any]]:
         actions.append({"kind": "turret", "command": TurretCommand(pan_deg=float(p.get("pan_deg", 0))).model_dump()})
     elif command.intent == "move_step":
         forward_cm = max(-12.0, min(12.0, float(p.get("forward_cm", 8))))
-        linear = 0.26 if forward_cm >= 0 else -0.22
-        duration = int(min(420, max(160, abs(forward_cm) * 25)))
+        linear = 0.45 if forward_cm >= 0 else -0.35
+        duration = int(min(500, max(260, abs(forward_cm) * 55)))
         actions.append({"kind": "drive", "command": DriveCommand(linear=linear, turn=0, duration_ms=duration).model_dump()})
     elif command.intent == "rotate_step":
         deg = max(-25.0, min(25.0, float(p.get("deg", 15))))
-        turn = 0.40 if deg >= 0 else -0.40
-        duration = int(min(450, max(160, abs(deg) * 12)))
+        turn = 0.70 if deg >= 0 else -0.70
+        duration = int(min(650, max(280, abs(deg) * 22)))
         actions.append({"kind": "drive", "command": DriveCommand(linear=0, turn=turn, duration_ms=duration).model_dump()})
     elif command.intent in {"say", "mood", "idle", "status"}:
         pass

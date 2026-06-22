@@ -16,7 +16,7 @@
     "driver": "freenove-pca9685-4wd",
     "i2c_address": "0x40",
     "pwm_frequency_hz": 50,
-    "max_duty_cycle": 0.28,
+    "max_duty_cycle": 0.45,
     "invert_left": false,
     "invert_right": false
   },
