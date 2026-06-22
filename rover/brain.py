@@ -24,7 +24,47 @@ def request(base: str, method: str, path: str, payload: dict[str, Any] | None = 
         return json.loads(resp.read().decode())
 
 
-def choose_body_intent(snapshot: dict[str, Any], *, zone: str, last_intent: str | None = None) -> dict[str, Any]:
+def scan_observations(scan_result: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Flatten /map/scan observations into bearing/distance pairs."""
+    out: list[dict[str, Any]] = []
+    if not scan_result:
+        return out
+    for obs in scan_result.get("observations") or []:
+        payload = ((obs.get("event") or {}).get("payload") or {}) if isinstance(obs, dict) else {}
+        bearing = payload.get("bearing_deg")
+        distance = payload.get("distance_cm")
+        if bearing is None or distance is None:
+            continue
+        try:
+            out.append({"bearing_deg": float(bearing), "distance_cm": float(distance)})
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def choose_escape_turn(scan_result: dict[str, Any] | None, *, minimum_clear_cm: float = 72.0) -> dict[str, Any] | None:
+    """Pick a conservative turn toward the clearest scanned side."""
+    observations = scan_observations(scan_result)
+    side_observations = [o for o in observations if abs(o["bearing_deg"]) >= 15.0]
+    if not side_observations:
+        return None
+    best = max(side_observations, key=lambda o: (o["distance_cm"], abs(o["bearing_deg"])))
+    center_distances = [o["distance_cm"] for o in observations if abs(o["bearing_deg"]) < 12.0]
+    center = min(center_distances) if center_distances else 0.0
+    if best["distance_cm"] < minimum_clear_cm and best["distance_cm"] < center + 18.0:
+        return None
+    deg = 25.0 if best["bearing_deg"] > 0 else -25.0
+    return {"deg": deg, "bearing_deg": best["bearing_deg"], "distance_cm": best["distance_cm"]}
+
+
+def extract_scan_result(supervisor_result: dict[str, Any]) -> dict[str, Any] | None:
+    for applied in supervisor_result.get("applied") or []:
+        if applied.get("kind") == "scan" and isinstance(applied.get("result"), dict):
+            return applied["result"]
+    return None
+
+
+def choose_body_intent(snapshot: dict[str, Any], *, zone: str, last_intent: str | None = None, last_scan: dict[str, Any] | None = None) -> dict[str, Any]:
     """Tiny PC/Hermes-side policy: scan often, move rarely, never raw motor duty."""
     flags = set(snapshot.get("safety_flags") or [])
     range_state = (snapshot.get("range_state") or {}).get("state")
@@ -33,8 +73,20 @@ def choose_body_intent(snapshot: dict[str, Any], *, zone: str, last_intent: str 
     distance = sensors.get("front_distance_cm")
     if flags & {"inconsistent_motor_safety", "sensor_errors"}:
         return {"intent": "stop", "mood": "alert", "speech": "Safety check failed. Stopping.", "params": {}}
-    if range_state in {"blocked", "near"} or (distance is not None and float(distance) < 70.0):
+    front_close = range_state in {"blocked", "near"} or (distance is not None and float(distance) < 70.0)
+    if front_close:
+        if last_intent == "rotate_step":
+            return {"intent": "scan", "mood": "thinking", "speech": "Checking the new angle.", "params": {"zone": zone, "angles": [-45, -25, 0, 25, 45]}}
         if last_intent == "scan":
+            escape = choose_escape_turn(last_scan)
+            if escape:
+                direction = "right" if escape["deg"] > 0 else "left"
+                return {
+                    "intent": "rotate_step",
+                    "mood": "focused",
+                    "speech": f"Path blocked. Turning {direction}.",
+                    "params": {"deg": escape["deg"], "reason": "clearest_scan", "bearing_deg": escape["bearing_deg"], "distance_cm": escape["distance_cm"]},
+                }
             return {"intent": "mood", "mood": "alert", "speech": "Path still blocked. Waiting.", "params": {}}
         return {"intent": "scan", "mood": "thinking", "speech": "Close obstacle. Scanning.", "params": {"zone": zone, "angles": [-45, -25, 0, 25, 45]}}
     if sensors.get("front_distance_cm") is None:
@@ -66,10 +118,13 @@ class BrainLoop:
     def once(self) -> dict[str, Any]:
         if self.supervised_body:
             snapshot = request(self.base, "GET", "/supervisor/status", timeout=8)
-            intent = choose_body_intent(snapshot, zone=self.zone, last_intent=self.last_intent)
+            intent = choose_body_intent(snapshot, zone=self.zone, last_intent=self.last_intent, last_scan=getattr(self, "last_scan", None))
             if not self.allow_movement and intent["intent"] in {"move_step", "rotate_step"}:
                 intent = {"intent": "scan", "mood": "thinking", "speech": "Movement is disabled from the PC brain.", "params": {"zone": self.zone, "angles": [-35, 0, 35]}}
             result = request(self.base, "POST", "/supervisor/intent", intent | {"source": "pc_brain"}, timeout=30)
+            scan = extract_scan_result(result)
+            if scan is not None:
+                self.last_scan = scan
             self.last_intent = intent["intent"] if result.get("accepted") else None
             return {"ok": True, "snapshot": snapshot, "intent": intent, "result": result}
         request(self.base, "POST", "/heartbeat", timeout=5)

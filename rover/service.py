@@ -535,8 +535,10 @@ async def move_step(command: MoveStepCommand) -> dict:
 
 @app.post("/movement/rotate-step")
 async def rotate_step(command: RotateStepCommand) -> dict:
-    turn = 0.45 if command.deg >= 0 else -0.45
-    duration = int(min(550, max(180, abs(command.deg) * 14)))
+    # Floor calibration from supervised testing: 0.65 turns clearly without
+    # forward lurch, while lower values only produced a tiny tick.
+    turn = 0.65 if command.deg >= 0 else -0.65
+    duration = int(min(900, max(260, abs(command.deg) * 22)))
     result = await guarded_drive(DriveCommand(linear=0, turn=turn, duration_ms=duration), require_permission=command.require_permission)
     result["step"] = command.model_dump()
     return result

@@ -187,6 +187,11 @@ def test_drive_rejected_in_no_motor_profile_and_step_requires_permission():
     assert step.status_code == 200
     assert step.json()["ok"] is False
 
+    rotate = client.post("/movement/rotate-step", json={"deg": 25, "require_permission": True})
+    assert rotate.status_code == 200
+    assert rotate.json()["ok"] is False
+    assert rotate.json()["command"] == {"linear": 0.0, "turn": 0.65, "duration_ms": 550}
+
 
 def test_visual_map_scan_and_look_remember_paths():
     scan = client.post("/map/visual-scan", json={"zone": "office", "angles": [0], "settle_ms": 50, "capture_each_angle": False})
