@@ -714,6 +714,11 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
             await body.stop()
             scan, summary = await reactive_escape_scan(command.zone, command.scan_angles)
             plan.append({"kind": "scan", "reason": f"front blocked {distance_value:.1f}cm", "summary": summary, "result": scan})
+            best = summary.get("best")
+            best_distance = float(best["distance_cm"]) if best else 0.0
+            if blocked_streak >= 4 and best_distance < command.front_clear_cm:
+                plan.append({"kind": "corner-trap", "reason": f"blocked for {blocked_streak} cycles; best side only {best_distance:.1f}cm", "summary": summary})
+                break
             if blocked_streak >= 2 and command.reverse_on_blocked:
                 reverse = await guarded_drive(DriveCommand(linear=-0.24, turn=0, duration_ms=180), require_permission=True)
                 plan.append({"kind": "reverse", "reason": "blocked streak", "result": reverse})

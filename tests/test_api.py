@@ -187,6 +187,24 @@ def test_reactive_explore_scan_only_path():
     assert "persistent" in data["safety"]
 
 
+def test_reactive_explore_halts_in_corner_trap(monkeypatch):
+    from rover import service
+
+    async def fake_scan(zone, angles):
+        return {"ok": True, "observations": []}, {"samples": [], "best": {"bearing_deg": 45.0, "distance_cm": 56.0}, "center": {"bearing_deg": 0.0, "distance_cm": 40.0}}
+
+    readings = iter([40.0, 40.0, 40.0, 40.0, 40.0])
+    monkeypatch.setattr(service, "reactive_escape_scan", fake_scan)
+    monkeypatch.setattr(service.body, "sensors", lambda: {"front_distance_cm": next(readings, 40.0), "errors": {}, "battery_percent": 50})
+    task = client.post(
+        "/tasks/reactive-explore",
+        json={"zone": "office", "allow_movement": True, "duration_seconds": 10, "max_cycles": 6, "front_clear_cm": 120, "front_stop_cm": 55, "front_emergency_cm": 30},
+    )
+    assert task.status_code == 200
+    plan = task.json()["plan"]
+    assert any(item["kind"] == "corner-trap" for item in plan)
+
+
 def test_vision_awareness_endpoint_records_snapshot_event_in_sim():
     task = client.post("/tasks/vision-awareness", json={"zone": "office", "capture": False, "scan": False})
     assert task.status_code == 200
