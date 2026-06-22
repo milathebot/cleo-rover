@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import time
+import wave
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +132,48 @@ class FreenoveSensorReader:
         except Exception as exc:  # pragma: no cover - hardware-dependent
             out["errors"]["adc"] = repr(exc)
         return out
+
+
+def audio_devices() -> dict[str, Any]:
+    def run(cmd: list[str]) -> dict[str, Any]:
+        if not shutil.which(cmd[0]):
+            return {"ok": False, "error": f"{cmd[0]} not found"}
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=6, check=False)
+        return {"ok": result.returncode == 0, "returncode": result.returncode, "stdout": result.stdout[-4000:], "stderr": result.stderr[-1000:]}
+
+    return {"playback": run(["aplay", "-l"]), "capture": run(["arecord", "-l"])}
+
+
+def play_tone(seconds: float = 0.35, hz: int = 880) -> dict[str, Any]:
+    if not shutil.which("aplay"):
+        return {"ok": False, "error": "aplay not found"}
+    seconds = max(0.05, min(2.0, float(seconds)))
+    rate = 22050
+    path = Path("/tmp/cleo-rover-tone.wav")
+    frames = int(rate * seconds)
+    import math
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        for i in range(frames):
+            sample = int(12000 * math.sin(2 * math.pi * hz * i / rate))
+            wf.writeframesraw(sample.to_bytes(2, "little", signed=True))
+    result = subprocess.run(["aplay", str(path)], capture_output=True, text=True, timeout=5, check=False)
+    return {"ok": result.returncode == 0, "path": str(path), "returncode": result.returncode, "stderr_tail": result.stderr[-500:]}
+
+
+def speak_text(text: str) -> dict[str, Any]:
+    text = str(text)[:240]
+    if shutil.which("espeak-ng"):
+        cmd = ["espeak-ng", text]
+    elif shutil.which("espeak"):
+        cmd = ["espeak", text]
+    else:
+        tone = play_tone(0.2, 660)
+        return {"ok": False, "error": "no espeak/espeak-ng found", "tone": tone, "text": text}
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=12, check=False)
+    return {"ok": result.returncode == 0, "tool": cmd[0], "text": text, "returncode": result.returncode, "stderr_tail": result.stderr[-500:]}
 
 
 def camera_tool() -> str | None:

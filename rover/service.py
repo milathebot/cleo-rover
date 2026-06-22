@@ -14,7 +14,7 @@ from .drivers import RoverBody
 from .hub import fetch_hub_snapshot
 from .mapping import map_summary, observation_items, scan_item, semantic_events_from_analysis
 from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisualMapScanCommand
-from .peripherals import camera_tool, capture_camera_snapshot
+from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
 from .supervisor import intent_to_actions, supervisor_snapshot, validate_intent
 from .persistence import RoverStore
 from .renderer import render_expression
@@ -205,6 +205,21 @@ async def turret(command: TurretCommand) -> dict:
 @app.post("/rgb")
 def rgb(command: RGBCommand) -> dict:
     return body.set_rgb(command)
+
+
+@app.get("/audio/devices")
+def audio_device_report() -> dict:
+    return {"ok": True, "devices": audio_devices()}
+
+
+@app.post("/audio/tone")
+def audio_tone(seconds: float = 0.35, hz: int = 880) -> dict:
+    return play_tone(seconds=seconds, hz=hz)
+
+
+@app.post("/speech/say")
+def speech_say(text: str) -> dict:
+    return speak_text(text)
 
 
 @app.get("/sensors")
@@ -588,7 +603,7 @@ async def supervisor_intent(command: BodyIntentCommand) -> dict:
         elif kind == "drive":
             applied.append({"kind": kind, "result": await guarded_drive(DriveCommand.model_validate(payload), require_permission=True)})
     if command.speech:
-        applied.append({"kind": "speech_stub", "text": command.speech})
+        applied.append({"kind": "speech", "result": speak_text(command.speech)})
     event = remember_event(RoverEvent(kind=RoverEventKind.manual_control, source=command.source, label=command.intent, payload={"intent": command.model_dump(), "applied": applied}))
     return {"ok": True, "accepted": True, "reason": reason, "applied": applied, "event": event.model_dump(), "snapshot": supervisor_status()}
 

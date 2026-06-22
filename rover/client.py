@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -125,6 +126,12 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("hear")
     sub.add_parser("snapshot")
+    sub.add_parser("audio-devices")
+    audio_tone = sub.add_parser("audio-tone")
+    audio_tone.add_argument("--seconds", type=float, default=0.35)
+    audio_tone.add_argument("--hz", type=int, default=880)
+    say = sub.add_parser("say")
+    say.add_argument("text")
 
     rgb = sub.add_parser("rgb")
     rgb.add_argument("--red", type=int, default=0)
@@ -272,6 +279,12 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "POST", "/hearing/simulate")
     elif args.cmd == "snapshot":
         result = request(args.base, "POST", "/vision/snapshot")
+    elif args.cmd == "audio-devices":
+        result = request(args.base, "GET", "/audio/devices")
+    elif args.cmd == "audio-tone":
+        result = request(args.base, "POST", f"/audio/tone?seconds={args.seconds}&hz={args.hz}")
+    elif args.cmd == "say":
+        result = request(args.base, "POST", f"/speech/say?text={urllib.parse.quote(args.text)}", timeout=15)
     elif args.cmd == "rgb":
         result = request(args.base, "POST", "/rgb", {"red": args.red, "green": args.green, "blue": args.blue, "brightness": args.brightness})
     elif args.cmd == "rgb-mode":

@@ -221,6 +221,17 @@ def test_supervisor_body_agent_contract():
     assert "movement" in move.json()["reason"] or "motors" in move.json()["reason"] or "bench_safe" in move.json()["reason"]
 
 
+def test_audio_endpoints_exist():
+    devices = client.get("/audio/devices")
+    assert devices.status_code == 200
+    assert devices.json()["ok"] is True
+    assert "playback" in devices.json()["devices"]
+
+    say = client.post("/speech/say?text=test")
+    assert say.status_code == 200
+    assert "ok" in say.json()
+
+
 def test_expression_preview_png():
     client.post("/expression", json={"mode": "thinking", "text": "boot", "brightness": 0.5})
     r = client.get("/expression/preview.png")
