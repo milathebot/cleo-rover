@@ -16,10 +16,27 @@ class SimState:
     stopped: bool = True
     last_drive: DriveCommand | None = None
     last_drive_at: float | None = None
+    last_reflex_stop: dict[str, Any] | None = None
     expression: ExpressionCommand = field(
         default_factory=lambda: ExpressionCommand(mode=ExpressionMode.idle, text="Cleo", brightness=0.45)
     )
     turret: TurretCommand = field(default_factory=lambda: TurretCommand(pan_deg=0))
+
+
+def should_reflex_stop(command: DriveCommand, sensors: dict[str, Any], *, threshold_cm: float) -> tuple[bool, str | None]:
+    """Local body reflex: stop forward motion if the front range gets too close."""
+    if command.linear <= 0:
+        return False, None
+    distance = sensors.get("front_distance_cm")
+    if distance is None:
+        return False, None
+    try:
+        distance_cm = float(distance)
+    except (TypeError, ValueError):
+        return False, None
+    if distance_cm < threshold_cm:
+        return True, f"front reflex stop: {distance_cm:.1f}cm below {threshold_cm:.1f}cm"
+    return False, None
 
 
 class RoverBody:
@@ -54,11 +71,31 @@ class RoverBody:
         if self._stop_task and not self._stop_task.done():
             self._stop_task.cancel()
 
-        async def auto_stop() -> None:
-            await asyncio.sleep(command.duration_ms / 1000)
+        async def drive_monitor() -> None:
+            deadline = time.time() + command.duration_ms / 1000
+            reflex_threshold = max(20.0, float(self.config.safety.front_stop_distance_cm))
+            while time.time() < deadline:
+                await asyncio.sleep(0.05)
+                if not self.hardware or not self.motors_armed or command.linear <= 0:
+                    continue
+                sensors = FreenoveSensorReader(
+                    front_stop_distance_cm=self.config.safety.front_stop_distance_cm,
+                    adc_voltage_coefficient=self.config.sensors.adc_voltage_coefficient,
+                ).snapshot()
+                reflex, reason = should_reflex_stop(command, sensors, threshold_cm=reflex_threshold)
+                if reflex:
+                    self.state.last_reflex_stop = {
+                        "reason": reason,
+                        "front_distance_cm": sensors.get("front_distance_cm"),
+                        "threshold_cm": reflex_threshold,
+                        "drive": command.model_dump(),
+                        "time": time.time(),
+                    }
+                    await self.stop()
+                    return
             await self.stop()
 
-        self._stop_task = asyncio.create_task(auto_stop())
+        self._stop_task = asyncio.create_task(drive_monitor())
 
     async def stop(self) -> None:
         self.state.stopped = True
@@ -154,6 +191,7 @@ class RoverBody:
                 ).as_dict()
                 if self.state.last_drive
                 else None,
+                "last_reflex_stop": self.state.last_reflex_stop,
             },
             "freenove_map": freenove_hardware_map(self.config),
             "turret": {

@@ -1,4 +1,5 @@
 from rover.config import RoverConfig
+from rover.drivers import should_reflex_stop
 from rover.freenove import FREENOVE_DEFAULT_SERVO_CHANNELS, FREENOVE_WHEEL_CHANNELS, drive_to_wheel_duty, freenove_hardware_map
 from rover.models import DriveCommand
 
@@ -32,3 +33,17 @@ def test_drive_to_wheel_duty_turn_right_splits_sides():
     assert duty.left_lower > 0
     assert duty.right_upper < 0
     assert duty.right_lower < 0
+
+
+def test_reflex_stop_only_applies_to_forward_close_obstacles():
+    forward = DriveCommand(linear=0.34, turn=0.0, duration_ms=220)
+    reverse = DriveCommand(linear=-0.30, turn=0.0, duration_ms=220)
+
+    stop, reason = should_reflex_stop(forward, {"front_distance_cm": 19.5}, threshold_cm=20.0)
+    assert stop is True
+    assert reason is not None
+    assert "19.5cm" in reason
+
+    assert should_reflex_stop(forward, {"front_distance_cm": 20.5}, threshold_cm=20.0) == (False, None)
+    assert should_reflex_stop(reverse, {"front_distance_cm": 10.0}, threshold_cm=20.0) == (False, None)
+    assert should_reflex_stop(forward, {"front_distance_cm": None}, threshold_cm=20.0) == (False, None)
