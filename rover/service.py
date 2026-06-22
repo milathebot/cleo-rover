@@ -13,7 +13,7 @@ from .config import load_config
 from .drivers import RoverBody
 from .hub import fetch_hub_snapshot
 from .mapping import map_summary, observation_items, scan_item, semantic_events_from_analysis
-from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisualMapScanCommand
+from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
 from .supervisor import intent_to_actions, supervisor_snapshot, validate_intent
 from .persistence import RoverStore
@@ -30,6 +30,16 @@ autonomy = AutonomyEngine(CONFIG.life_loop, state=store.load_state(), cooldowns=
 movement_grant: dict | None = None
 
 app = FastAPI(title="Cleo Rover Mk1 Body Service", version="0.1.0")
+
+
+@app.on_event("startup")
+async def start_body_watchdog() -> None:
+    body.start_safety_watchdog()
+
+
+@app.on_event("shutdown")
+async def stop_body_watchdog() -> None:
+    await body.stop_safety_watchdog()
 
 
 def body_status_dict() -> dict:
@@ -568,6 +578,35 @@ def movement_status() -> dict:
     return {"ok": True, "active": active, "movement": movement_grant}
 
 
+def scan_observation_summary(scan: dict) -> dict:
+    samples = []
+    for obs in scan.get("observations") or []:
+        payload = ((obs.get("event") or {}).get("payload") or {}) if isinstance(obs, dict) else {}
+        bearing = payload.get("bearing_deg")
+        distance = payload.get("distance_cm")
+        if bearing is None or distance is None:
+            continue
+        try:
+            samples.append({"bearing_deg": float(bearing), "distance_cm": float(distance)})
+        except (TypeError, ValueError):
+            continue
+    best = max(samples, key=lambda item: item["distance_cm"]) if samples else None
+    center = min((item for item in samples if abs(item["bearing_deg"]) < 8.0), key=lambda item: abs(item["bearing_deg"]), default=None)
+    return {"samples": samples, "best": best, "center": center}
+
+
+async def reactive_escape_scan(zone: str, angles: list[float]) -> tuple[dict, dict]:
+    scan = await map_scan(MapScanCommand(zone=zone, angles=angles, settle_ms=180, snapshot_center=False))
+    return scan, scan_observation_summary(scan)
+
+
+async def reactive_turn_toward(best: dict | None) -> dict:
+    if not best:
+        return await guarded_drive(DriveCommand(linear=0, turn=0.45, duration_ms=120), require_permission=True)
+    deg = 10 if float(best.get("bearing_deg", 0)) >= 0 else -10
+    return await rotate_step(RotateStepCommand(deg=deg, require_permission=True))
+
+
 @app.get("/supervisor/status")
 def supervisor_status() -> dict:
     return supervisor_snapshot(
@@ -608,6 +647,120 @@ async def supervisor_intent(command: BodyIntentCommand) -> dict:
         applied.append({"kind": "speech", "result": speak_text(command.speech)})
     event = remember_event(RoverEvent(kind=RoverEventKind.manual_control, source=command.source, label=command.intent, payload={"intent": command.model_dump(), "applied": applied}))
     return {"ok": True, "accepted": True, "reason": reason, "applied": applied, "event": event.model_dump(), "snapshot": supervisor_status()}
+
+
+@app.post("/tasks/reactive-explore")
+async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
+    """Freenove-style local obstacle avoidance loop.
+
+    This runs on the Pi/body service: sense -> decide -> short action -> sense.
+    The PC brain only grants/starts the task; fast obstacle handling is local.
+    """
+    global movement_grant
+    grant = MovementPermissionCommand(
+        task=f"reactive-explore:{command.zone}",
+        allow_movement=command.allow_movement,
+        duration_seconds=command.duration_seconds,
+        max_linear=max(0.1, command.crawl_linear),
+        max_turn=0.65,
+        notes=command.notes or "Pi-side Freenove-style reactive explore",
+    )
+    movement_grant = grant.model_dump() | {"expires_at": time.time() + grant.duration_seconds, "active": grant.allow_movement}
+    event = store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="reactive_explore", label=grant.task, payload=movement_grant | {"zone": command.zone}))
+    events.add(event)
+    plan: list[dict] = []
+    deadline = time.time() + command.duration_seconds
+    blocked_streak = 0
+
+    for cycle in range(command.max_cycles):
+        if time.time() >= deadline:
+            plan.append({"kind": "halt", "reason": "duration elapsed"})
+            break
+        sensors_now = body.sensors()
+        distance = sensors_now.get("front_distance_cm")
+        distance_value = float(distance) if distance is not None else None
+        plan.append({"kind": "sense", "cycle": cycle + 1, "front_distance_cm": distance_value, "sensors": {"errors": sensors_now.get("errors"), "battery_percent": sensors_now.get("battery_percent")}})
+
+        if not command.allow_movement:
+            scan, summary = await reactive_escape_scan(command.zone, command.scan_angles)
+            plan.append({"kind": "scan-only", "cycle": cycle + 1, "summary": summary, "result": scan})
+            break
+
+        if distance_value is None:
+            scan, summary = await reactive_escape_scan(command.zone, command.scan_angles)
+            plan.append({"kind": "scan", "reason": "front range unknown", "summary": summary})
+            turn = await reactive_turn_toward(summary.get("best"))
+            plan.append({"kind": "turn", "reason": "range unknown", "result": turn})
+            await asyncio.sleep(0.08)
+            continue
+
+        if distance_value < command.front_emergency_cm:
+            blocked_streak += 1
+            await body.stop()
+            plan.append({"kind": "stop", "reason": f"emergency front {distance_value:.1f}cm < {command.front_emergency_cm:.1f}cm"})
+            if command.reverse_on_blocked:
+                reverse = await guarded_drive(DriveCommand(linear=-0.28, turn=0, duration_ms=220), require_permission=True)
+                plan.append({"kind": "reverse", "result": reverse})
+                await asyncio.sleep(0.25)
+            scan, summary = await reactive_escape_scan(command.zone, command.scan_angles)
+            plan.append({"kind": "scan", "reason": "emergency escape", "summary": summary, "result": scan})
+            turn = await reactive_turn_toward(summary.get("best"))
+            plan.append({"kind": "turn", "reason": "emergency escape", "result": turn})
+            await asyncio.sleep(0.15)
+            continue
+
+        if distance_value < command.front_stop_cm:
+            blocked_streak += 1
+            await body.stop()
+            scan, summary = await reactive_escape_scan(command.zone, command.scan_angles)
+            plan.append({"kind": "scan", "reason": f"front blocked {distance_value:.1f}cm", "summary": summary, "result": scan})
+            if blocked_streak >= 2 and command.reverse_on_blocked:
+                reverse = await guarded_drive(DriveCommand(linear=-0.24, turn=0, duration_ms=180), require_permission=True)
+                plan.append({"kind": "reverse", "reason": "blocked streak", "result": reverse})
+                await asyncio.sleep(0.2)
+            turn = await reactive_turn_toward(summary.get("best"))
+            plan.append({"kind": "turn", "reason": "front blocked", "result": turn})
+            await asyncio.sleep(0.12)
+            continue
+
+        blocked_streak = 0
+        if distance_value < command.front_clear_cm:
+            scan, summary = await reactive_escape_scan(command.zone, command.scan_angles)
+            plan.append({"kind": "scan", "reason": f"clearance {distance_value:.1f}cm below crawl threshold", "summary": summary, "result": scan})
+            best = summary.get("best")
+            center = summary.get("center")
+            if best and (center is None or float(best["distance_cm"]) > float(center["distance_cm"]) + 20):
+                turn = await reactive_turn_toward(best)
+                plan.append({"kind": "turn", "reason": "better side clearance", "result": turn})
+            else:
+                plan.append({"kind": "hold", "reason": "no side sufficiently better"})
+            await asyncio.sleep(0.12)
+            continue
+
+        crawl = await guarded_drive(DriveCommand(linear=command.crawl_linear, turn=0, duration_ms=180), require_permission=True)
+        plan.append({"kind": "crawl", "result": crawl})
+        await asyncio.sleep(0.22)
+        if body.state.last_reflex_stop:
+            plan.append({"kind": "reflex-stop", "result": body.state.last_reflex_stop})
+            blocked_streak += 1
+
+    await body.stop()
+    return {"ok": True, "task": movement_grant | {"zone": command.zone}, "plan": plan, "event": event.model_dump(), "safety": "Pi-side sense/decide/act loop with persistent forward watchdog and no forward crawl below front_clear_cm."}
+
+
+@app.post("/tasks/vision-awareness")
+async def vision_awareness_task(command: VisionAwarenessCommand) -> dict:
+    capture = capture_camera_snapshot(CONFIG.camera.capture_dir, width=CONFIG.camera.width, height=CONFIG.camera.height) if body.mode == "hardware" and command.capture else None
+    scan = await visual_map_scan(VisualMapScanCommand(zone=command.zone, angles=command.angles, settle_ms=250, capture_each_angle=False)) if command.scan else None
+    event = remember_event(
+        RoverEvent(
+            kind=RoverEventKind.camera_snapshot,
+            source="vision_awareness",
+            label=f"vision awareness {command.zone}",
+            payload={"zone": command.zone, "capture": capture, "scan": scan, "needs_external_vision": True, "notes": command.notes},
+        )
+    )
+    return {"ok": True, "zone": command.zone, "capture": capture, "scan": scan, "event": event.model_dump(), "next_step": "Send capture to Hermes vision, then POST labels/objects to /vision/analysis."}
 
 
 @app.post("/tasks/map-floor")

@@ -51,12 +51,62 @@ class RoverBody:
         self.config = config or RoverConfig()
         self.state = SimState()
         self._stop_task: asyncio.Task | None = None
+        self._watchdog_task: asyncio.Task | None = None
         self.display_ready = mode == "hardware"
         self.hardware: FreenoveHardware | None = None
         if mode == "hardware" and self.config.motors.driver == "freenove-pca9685-4wd":
             self.hardware = FreenoveHardware(self.config)
         self.hardware_ready = mode == "hardware" and self.hardware is not None
         self.motors_armed = self.hardware_ready and not self.config.safety.bench_safe_no_motors
+
+    def _reflex_threshold_cm(self) -> float:
+        return max(45.0, float(self.config.safety.front_stop_distance_cm))
+
+    def _sensor_snapshot(self) -> dict[str, Any]:
+        return FreenoveSensorReader(
+            front_stop_distance_cm=self.config.safety.front_stop_distance_cm,
+            adc_voltage_coefficient=self.config.sensors.adc_voltage_coefficient,
+        ).snapshot()
+
+    async def _check_forward_reflex(self, command: DriveCommand, *, source: str) -> bool:
+        if not self.hardware or not self.motors_armed or command.linear <= 0:
+            return False
+        sensors = self._sensor_snapshot()
+        reflex, reason = should_reflex_stop(command, sensors, threshold_cm=self._reflex_threshold_cm())
+        if reflex:
+            self.state.last_reflex_stop = {
+                "reason": reason,
+                "front_distance_cm": sensors.get("front_distance_cm"),
+                "threshold_cm": self._reflex_threshold_cm(),
+                "drive": command.model_dump(),
+                "source": source,
+                "time": time.time(),
+            }
+            await self.stop()
+            return True
+        return False
+
+    def start_safety_watchdog(self) -> None:
+        if self._watchdog_task and not self._watchdog_task.done():
+            return
+
+        async def watchdog() -> None:
+            while True:
+                await asyncio.sleep(0.03)
+                command = self.state.last_drive
+                if self.state.stopped or command is None or command.linear <= 0:
+                    continue
+                await self._check_forward_reflex(command, source="persistent_watchdog")
+
+        self._watchdog_task = asyncio.create_task(watchdog())
+
+    async def stop_safety_watchdog(self) -> None:
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
 
     async def drive(self, command: DriveCommand) -> None:
         safe_duration = min(command.duration_ms, self.config.safety.max_drive_duration_ms)
@@ -73,25 +123,9 @@ class RoverBody:
 
         async def drive_monitor() -> None:
             deadline = time.time() + command.duration_ms / 1000
-            reflex_threshold = max(35.0, float(self.config.safety.front_stop_distance_cm))
             while time.time() < deadline:
                 await asyncio.sleep(0.02)
-                if not self.hardware or not self.motors_armed or command.linear <= 0:
-                    continue
-                sensors = FreenoveSensorReader(
-                    front_stop_distance_cm=self.config.safety.front_stop_distance_cm,
-                    adc_voltage_coefficient=self.config.sensors.adc_voltage_coefficient,
-                ).snapshot()
-                reflex, reason = should_reflex_stop(command, sensors, threshold_cm=reflex_threshold)
-                if reflex:
-                    self.state.last_reflex_stop = {
-                        "reason": reason,
-                        "front_distance_cm": sensors.get("front_distance_cm"),
-                        "threshold_cm": reflex_threshold,
-                        "drive": command.model_dump(),
-                        "time": time.time(),
-                    }
-                    await self.stop()
+                if await self._check_forward_reflex(command, source="drive_monitor"):
                     return
             await self.stop()
 

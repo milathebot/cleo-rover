@@ -177,6 +177,26 @@ def test_movement_permission_and_map_floor_are_permissioned():
     assert revoked.json()["stopped"] is True
 
 
+def test_reactive_explore_scan_only_path():
+    task = client.post("/tasks/reactive-explore", json={"zone": "office", "allow_movement": False, "duration_seconds": 5, "max_cycles": 2})
+    assert task.status_code == 200
+    data = task.json()
+    assert data["ok"] is True
+    assert data["task"]["active"] is False
+    assert any(item["kind"] == "scan-only" for item in data["plan"])
+    assert "persistent" in data["safety"]
+
+
+def test_vision_awareness_endpoint_records_snapshot_event_in_sim():
+    task = client.post("/tasks/vision-awareness", json={"zone": "office", "capture": False, "scan": False})
+    assert task.status_code == 200
+    data = task.json()
+    assert data["ok"] is True
+    assert data["capture"] is None
+    assert data["scan"] is None
+    assert data["event"]["kind"] == "camera_snapshot"
+
+
 def test_drive_rejected_in_no_motor_profile_and_step_requires_permission():
     drive = client.post("/drive", json={"linear": 0.2, "turn": 0, "duration_ms": 100})
     assert drive.status_code == 200

@@ -139,6 +139,28 @@ class MapFloorTaskCommand(BaseModel):
     notes: str | None = Field(default=None, max_length=240)
 
 
+class ReactiveExploreCommand(BaseModel):
+    zone: str = Field(default="office", max_length=80)
+    allow_movement: bool = False
+    duration_seconds: int = Field(default=45, ge=1, le=300)
+    max_cycles: int = Field(default=12, ge=1, le=60)
+    crawl_linear: float = Field(default=0.26, ge=0.0, le=0.5)
+    front_clear_cm: float = Field(default=120.0, ge=30.0, le=300.0)
+    front_stop_cm: float = Field(default=45.0, ge=15.0, le=150.0)
+    front_emergency_cm: float = Field(default=25.0, ge=5.0, le=80.0)
+    reverse_on_blocked: bool = True
+    scan_angles: list[float] = Field(default_factory=lambda: [-45, 0, 45], max_length=9)
+    notes: str | None = Field(default=None, max_length=240)
+
+
+class VisionAwarenessCommand(BaseModel):
+    zone: str = Field(default="office", max_length=80)
+    capture: bool = True
+    scan: bool = True
+    angles: list[float] = Field(default_factory=lambda: [-45, 0, 45], max_length=9)
+    notes: str | None = Field(default=None, max_length=240)
+
+
 class MoveStepCommand(BaseModel):
     forward_cm: float = Field(default=10.0, ge=-30.0, le=30.0)
     require_permission: bool = True
