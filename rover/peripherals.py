@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -159,21 +160,37 @@ def play_tone(seconds: float = 0.35, hz: int = 880) -> dict[str, Any]:
         for i in range(frames):
             sample = int(12000 * math.sin(2 * math.pi * hz * i / rate))
             wf.writeframesraw(sample.to_bytes(2, "little", signed=True))
-    result = subprocess.run(["aplay", str(path)], capture_output=True, text=True, timeout=5, check=False)
-    return {"ok": result.returncode == 0, "path": str(path), "returncode": result.returncode, "stderr_tail": result.stderr[-500:]}
+    cmd = ["aplay"]
+    card = os.getenv("ALSA_CARD")
+    if card:
+        cmd += ["-D", f"plughw:{card},0"]
+    cmd.append(str(path))
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=5, check=False)
+    return {"ok": result.returncode == 0, "path": str(path), "cmd": cmd, "returncode": result.returncode, "stderr_tail": result.stderr[-500:]}
 
 
 def speak_text(text: str) -> dict[str, Any]:
     text = str(text)[:240]
+    volume = os.getenv("CLEO_ROVER_SPEECH_VOLUME", "180")
+    speed = os.getenv("CLEO_ROVER_SPEECH_SPEED", "150")
+    card = os.getenv("ALSA_CARD")
     if shutil.which("espeak-ng"):
-        cmd = ["espeak-ng", text]
+        synth = ["espeak-ng", "-a", volume, "-s", speed, "--stdout", text]
     elif shutil.which("espeak"):
-        cmd = ["espeak", text]
+        synth = ["espeak", "-a", volume, "-s", speed, "--stdout", text]
     else:
         tone = play_tone(0.2, 660)
         return {"ok": False, "error": "no espeak/espeak-ng found", "tone": tone, "text": text}
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=12, check=False)
-    return {"ok": result.returncode == 0, "tool": cmd[0], "text": text, "returncode": result.returncode, "stderr_tail": result.stderr[-500:]}
+    play = ["aplay"]
+    if card:
+        play += ["-D", f"plughw:{card},0"]
+    synth_proc = subprocess.Popen(synth, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    play_proc = subprocess.run(play, stdin=synth_proc.stdout, capture_output=True, timeout=15, check=False)
+    if synth_proc.stdout:
+        synth_proc.stdout.close()
+    _, synth_err = synth_proc.communicate(timeout=2)
+    ok = synth_proc.returncode == 0 and play_proc.returncode == 0
+    return {"ok": ok, "tool": synth[0], "text": text, "volume": volume, "speed": speed, "play_cmd": play, "synth_returncode": synth_proc.returncode, "play_returncode": play_proc.returncode, "stderr_tail": (synth_err.decode(errors="replace") + play_proc.stderr.decode(errors="replace"))[-700:]}
 
 
 def camera_tool() -> str | None:
