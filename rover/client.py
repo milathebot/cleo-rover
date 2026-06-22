@@ -169,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     expr.add_argument("mode", choices=["idle", "happy", "sad", "listening", "thinking", "confused", "speaking", "alert", "mad", "focused", "laugh", "charging", "disconnected", "manual", "curious", "watching", "seeking", "sleeping", "shy", "proud", "low_power"])
     expr.add_argument("--text", default=None)
     expr.add_argument("--brightness", type=float, default=0.6)
+    sub.add_parser("display-test")
 
     turret = sub.add_parser("turret")
     turret.add_argument("--pan-deg", type=float, default=0.0)
@@ -325,6 +326,10 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "POST", "/drive", {"linear": args.linear, "turn": args.turn, "duration_ms": args.duration_ms})
     elif args.cmd == "expression":
         result = request(args.base, "POST", "/expression", {"mode": args.mode, "text": args.text, "brightness": args.brightness})
+    elif args.cmd == "display-test":
+        expr_result = request(args.base, "POST", "/expression", {"mode": "curious", "text": "pip", "brightness": 0.65})
+        sensors_now = request(args.base, "GET", "/sensors")
+        result = {"ok": True, "expression": expr_result, "display": sensors_now.get("display"), "note": "Display should show Pip's abstract curious frame if wired and SPI is enabled."}
     elif args.cmd == "turret":
         result = request(args.base, "POST", "/turret", {"pan_deg": args.pan_deg})
     else:  # pragma: no cover

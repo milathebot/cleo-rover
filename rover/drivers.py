@@ -6,9 +6,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .config import RoverConfig
+from .display import NullDisplay, ST7789Display
 from .freenove import FreenoveHardware, drive_to_wheel_duty, freenove_hardware_map
 from .models import DriveCommand, ExpressionCommand, ExpressionMode, RGBCommand, TurretCommand
 from .peripherals import FreenoveSensorReader, camera_ready, rgb_ready, set_rgb
+from .renderer import render_expression
 
 
 @dataclass
@@ -52,7 +54,10 @@ class RoverBody:
         self.state = SimState()
         self._stop_task: asyncio.Task | None = None
         self._watchdog_task: asyncio.Task | None = None
-        self.display_ready = mode == "hardware"
+        self.display = NullDisplay()
+        if mode == "hardware":
+            self.display = ST7789Display(self.config.display)
+        self.display_ready = self.display.ready
         self.hardware: FreenoveHardware | None = None
         if mode == "hardware" and self.config.motors.driver == "freenove-pca9685-4wd":
             self.hardware = FreenoveHardware(self.config)
@@ -107,6 +112,7 @@ class RoverBody:
                 await self._watchdog_task
             except asyncio.CancelledError:
                 pass
+        self.display.close()
 
     async def drive(self, command: DriveCommand) -> None:
         safe_duration = min(command.duration_ms, self.config.safety.max_drive_duration_ms)
@@ -138,7 +144,9 @@ class RoverBody:
 
     async def set_expression(self, command: ExpressionCommand) -> None:
         self.state.expression = command
-        # Hardware mode: render abstract Cleo UI on Waveshare ST7789.
+        if self.mode == "hardware":
+            result = self.display.show(render_expression(command).image)
+            self.display_ready = result.ready
 
     async def set_turret(self, command: TurretCommand) -> None:
         self.state.turret = command
@@ -215,6 +223,16 @@ class RoverBody:
                 "ready": self.display_ready,
                 "size": [self.config.display.width, self.config.display.height],
                 "rotation": self.config.display.rotation,
+                "spi": [self.config.display.spi_bus, self.config.display.spi_device],
+                "pins": {
+                    "din_mosi": 10,
+                    "clk_sclk": 11,
+                    "cs_ce0": 8 if self.config.display.spi_device == 0 else 7,
+                    "dc": self.config.display.dc_pin,
+                    "rst": self.config.display.reset_pin,
+                    "bl": self.config.display.backlight_pin,
+                },
+                "last_error": getattr(self.display, "last_error", None),
             },
             "motors": {
                 "driver": self.config.motors.driver,

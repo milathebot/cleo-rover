@@ -77,6 +77,30 @@ async def stop_body_watchdog() -> None:
     await body.stop_safety_watchdog()
 
 
+def gpio_pin_claims() -> dict[int, list[str]]:
+    claims: dict[int, list[str]] = {}
+
+    def claim(pin: int | None, label: str) -> None:
+        if pin is not None:
+            claims.setdefault(pin, []).append(label)
+
+    claim(CONFIG.display.dc_pin, "display.dc")
+    claim(CONFIG.display.reset_pin, "display.rst")
+    claim(CONFIG.display.backlight_pin, "display.bl")
+    claim(CONFIG.sensors.ultrasonic_trigger_pin, "ultrasonic.trigger")
+    claim(CONFIG.sensors.ultrasonic_echo_pin, "ultrasonic.echo")
+    claim(CONFIG.sensors.line_left_pin, "line.left")
+    claim(CONFIG.sensors.line_center_pin, "line.center")
+    claim(CONFIG.sensors.line_right_pin, "line.right")
+    claim(CONFIG.sensors.bumper_left_pin, "bumper.left")
+    claim(CONFIG.sensors.bumper_right_pin, "bumper.right")
+    return claims
+
+
+def gpio_pin_conflicts() -> dict[int, list[str]]:
+    return {pin: labels for pin, labels in gpio_pin_claims().items() if len(labels) > 1}
+
+
 def body_status_dict() -> dict:
     ready = body.readiness()
     status = {
@@ -302,6 +326,9 @@ def preflight(mode: str = "presence") -> dict:
     add("profile_known", bool(status_now.get("profile")), f"profile={status_now.get('profile')}")
     add("doctor_clean", doctor_now.get("ok") is True, "; ".join(doctor_now.get("warnings") or ["no warnings"]))
     add("sensors_shape", isinstance(sensors_now, dict) and "errors" in sensors_now, "sensor snapshot returned")
+    conflicts = gpio_pin_conflicts()
+    add("gpio_pin_conflicts", not conflicts, f"conflicts={conflicts}" if conflicts else "no duplicate GPIO claims")
+    add("display_pin_map", CONFIG.display.dc_pin == 25 and CONFIG.display.reset_pin == 24, f"ST7789 DC=GPIO{CONFIG.display.dc_pin}, RST=GPIO{CONFIG.display.reset_pin}, BL={'3.3V/manual' if CONFIG.display.backlight_pin is None else 'GPIO' + str(CONFIG.display.backlight_pin)}")
 
     if mode in {"presence", "boot", "safe"}:
         add("no_motor_profile", status_now.get("motors_armed") is False, "motors must be unarmed for presence/boot")

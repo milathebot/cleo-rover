@@ -29,6 +29,10 @@ def test_config_endpoint():
     assert data["motors"]["i2c_address"] == "0x40"
     assert data["turret"]["pan_channel"] == 8
     assert data["turret"]["tilt_channel"] == 9
+    assert data["display"]["dc_pin"] == 25
+    assert data["display"]["reset_pin"] == 24
+    assert data["display"].get("backlight_pin") is None
+    assert data["sensors"]["ultrasonic_trigger_pin"] == 27
     assert data["safety"]["bench_safe_no_motors"] is True
 
 
@@ -135,6 +139,8 @@ def test_doctor_last_seen_motion_and_prune_endpoints():
     assert preflight.status_code == 200
     assert preflight.json()["mode"] == "presence"
     assert any(check["name"] == "bench_safe" for check in preflight.json()["checks"])
+    assert any(check["name"] == "gpio_pin_conflicts" and check["ok"] for check in preflight.json()["checks"])
+    assert any(check["name"] == "display_pin_map" and check["ok"] for check in preflight.json()["checks"])
 
     last_seen = client.get("/last-seen")
     assert last_seen.status_code == 200

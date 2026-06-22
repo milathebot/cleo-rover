@@ -9,8 +9,8 @@
     "spi_bus": 0,
     "spi_device": 0,
     "dc_pin": 25,
-    "reset_pin": 27,
-    "backlight_pin": 18
+    "reset_pin": 24,
+    "backlight_pin": null
   },
   "motors": {
     "driver": "freenove-pca9685-4wd",

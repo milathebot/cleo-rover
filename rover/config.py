@@ -16,8 +16,8 @@ class DisplayConfig(BaseModel):
     rotation: int = 180
     spi_bus: int = 0
     spi_device: int = 0
-    dc_pin: int | None = None
-    reset_pin: int | None = None
+    dc_pin: int | None = 25
+    reset_pin: int | None = 24
     backlight_pin: int | None = None
 
 

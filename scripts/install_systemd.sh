@@ -20,7 +20,8 @@ Wants=network-online.target
 Type=simple
 User=$USER_NAME
 WorkingDirectory=$APP_DIR
-Environment=CLEO_ROVER_MODE=sim
+Environment=CLEO_ROVER_MODE=hardware
+Environment=CLEO_ROVER_CONFIG=$APP_DIR/config/rover.hardware.presence.json
 ExecStart=$APP_DIR/.venv/bin/uvicorn rover.service:app --host 127.0.0.1 --port 8099
 Restart=on-failure
 RestartSec=3

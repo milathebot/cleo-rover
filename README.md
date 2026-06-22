@@ -11,7 +11,8 @@ This repo runs in safe simulator and hardware-presence modes:
 - health/status API
 - drive commands with automatic timeout safety
 - stop command
-- expression state for the 2-inch screen
+- expression state for the 2-inch Waveshare ST7789 screen
+- hardware SPI display driver for the Waveshare 2-inch 240×320 ST7789V LCD
 - PNG expression renderer for the Waveshare 2-inch screen
 - PC-side operator CLI
 - persistent SQLite autonomy state, events, cooldowns, and spatial memory
@@ -65,6 +66,7 @@ Use the operator CLI:
 
 ```bash
 cleo-rover status
+cleo-rover display-test
 cleo-rover expression thinking --text booting
 cleo-rover event wake_word --label Cleo
 cleo-rover hear
@@ -237,6 +239,7 @@ We do **not** run Freenove's robot app/TCP server for Cleo Rover. The vendor rep
 - pan/tilt servos: channels `8/9`
 - line sensors BCM pins: `14/15/23`
 - ultrasonic BCM pins: trigger `27`, echo `22`
+- Waveshare 2-inch ST7789V display over SPI0: DIN/MOSI `10`, CLK/SCLK `11`, CS/CE0 `8`, DC `25`, RST `24`, BL wired to `3.3V` by default (`backlight_pin: null`)
 
 The default max duty cycle is conservative at `0.35`, and real motor output stays disabled until a local config explicitly sets `bench_safe_no_motors: false` and the chassis is lifted for first movement tests.
 
@@ -248,10 +251,11 @@ For a fresh Pi or after pulling new code:
 2. Enable I2C, SPI, and camera interfaces.
 3. Install/update the repo in `/home/cleo/cleo-rover` and run `pip install -e '.[pi]'` inside the project venv.
 4. Install the main service with `sudo scripts/install_systemd.sh`.
-5. Put the service into no-motor presence mode with `sudo scripts/set_rover_profile.sh presence`.
-6. Verify `/health`, `/status`, `/config`, `/sensors`, and `/vision/snapshot` before any floor movement.
-7. Install the Telegram agent and profile-switch sudoers helper only after local service checks pass.
-8. Use floor-cautious mode only for deliberate floor tests with a clear area and an active movement arm.
+5. Verify the display safely with `cleo-rover display-test` after the ST7789 display is wired.
+6. Optionally install Pip's observation-first life loop with `sudo scripts/install_pip_life_systemd.sh`.
+7. Verify `/health`, `/status`, `/config`, `/sensors`, `/preflight`, and `/vision/snapshot` before any floor movement.
+8. Install the Telegram agent and profile-switch sudoers helper only after local service checks pass.
+9. Use floor-cautious mode only for deliberate floor tests with a clear area and an active movement arm.
 
 ## Hybrid body/brain control
 
