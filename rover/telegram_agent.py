@@ -48,6 +48,9 @@ class AgentConfig:
     workdir: str = "/home/cleo/cleo-rover"
     poll_timeout: int = 25
     dry_run: bool = False
+    hermes_api_base: str | None = None
+    hermes_api_key: str | None = None
+    hermes_model: str = "hermes-agent"
 
 
 def rover_text(text: str) -> str | None:
@@ -233,6 +236,84 @@ def run_command(argv: list[str], config: AgentConfig, *, timeout: float = 90) ->
     return proc.returncode, proc.stdout.strip()
 
 
+def _short_json(value: Any, *, max_chars: int = 2600) -> str:
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return text if len(text) <= max_chars else text[: max_chars - 3] + "..."
+
+
+def hermes_pip_response(prompt: str, context: dict[str, Any], config: AgentConfig) -> tuple[bool, str]:
+    """Ask Hermes for a concise Pip voice line via Hermes' OpenAI-compatible API server."""
+
+    if not config.hermes_api_base or not config.hermes_api_key:
+        return False, (
+            "Hermes bridge is not configured on the Pi. Set CLEO_ROVER_HERMES_API_BASE "
+            "and CLEO_ROVER_HERMES_API_KEY for cleo-rover-telegram-agent."
+        )
+
+    base = config.hermes_api_base.rstrip("/")
+    url = base + "/chat/completions" if base.endswith("/v1") else base + "/v1/chat/completions"
+    system = (
+        "You are Pip, Noot's shy office droid rover. Reply in first person as Pip, "
+        "warm, compact, a little timid but curious. Do not claim to move unless the "
+        "provided state says movement is active or allowed. For safety, never instruct "
+        "movement, wiring, or power changes unless Noot explicitly asks. Keep voice output "
+        "under 2 short sentences. No emoji."
+    )
+    user = (
+        f"Noot asked Pip: {prompt}\n\n"
+        f"Current Pip state JSON: {_short_json(context)}\n\n"
+        "Answer as Pip for text-to-speech."
+    )
+    payload = {
+        "model": config.hermes_model,
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        method="POST",
+        headers={"content-type": "application/json", "authorization": f"Bearer {config.hermes_api_key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as exc:
+        return False, f"Hermes bridge request failed: {exc!r}"
+
+    try:
+        text = str(data["choices"][0]["message"]["content"]).strip()
+    except Exception:
+        return False, "Hermes bridge returned an unexpected response shape: " + _short_json(data, max_chars=900)
+    if not text:
+        return False, "Hermes bridge returned an empty response."
+    return True, text[:600]
+
+
+def maybe_handle_pip_bridge(argv: list[str], output: str, config: AgentConfig) -> str | None:
+    if argv[:2] != ["cleo-rover", "pip"]:
+        return None
+    try:
+        data = json.loads(output)
+    except Exception:
+        return None
+    if data.get("action") != "relay_to_hermes":
+        return None
+
+    prompt = str(data.get("prompt") or "").strip()
+    context = data.get("context") if isinstance(data.get("context"), dict) else {}
+    ok, response = hermes_pip_response(prompt, context, config)
+    if not ok:
+        return response + "\n\nRaw Pip relay request:\n" + output[:2500]
+
+    code, say_output = run_command(["cleo-rover", "say", response], config, timeout=25)
+    spoken = "spoken" if code == 0 else f"speech failed exit={code}: {say_output[-500:]}"
+    return f"Pip/Hermes:\n{response}\n\n{spoken}"
+
+
 def profile_switch_argv(config: AgentConfig, profile: str) -> list[str]:
     return ["sudo", "-n", str(Path(config.workdir) / PROFILE_SWITCH_SCRIPT), profile]
 
@@ -413,7 +494,8 @@ def handle_message(api: TelegramAPI, config: AgentConfig, message: dict[str, Any
         if argv[:2] == ["cleo-rover", "map-floor"]:
             clear_arm_state(config)
         prefix = "OK" if code == 0 else f"FAILED exit={code}"
-        api.send_message(chat_id, f"{prefix}\n{output or '(no output)'}")
+        bridge_output = maybe_handle_pip_bridge(argv, output, config) if code == 0 else None
+        api.send_message(chat_id, f"{prefix}\n{bridge_output or output or '(no output)'}")
     except subprocess.TimeoutExpired:
         api.send_message(chat_id, "FAILED: command timed out")
     except Exception as exc:
@@ -470,12 +552,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allowed-user-id", type=int, default=os.getenv("CLEO_ROVER_TELEGRAM_ALLOWED_USER_ID"))
     parser.add_argument("--workdir", default=os.getenv("CLEO_ROVER_WORKDIR", "/home/cleo/cleo-rover"))
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--hermes-api-base", default=os.getenv("CLEO_ROVER_HERMES_API_BASE"))
+    parser.add_argument("--hermes-api-key", default=os.getenv("CLEO_ROVER_HERMES_API_KEY"))
+    parser.add_argument("--hermes-model", default=os.getenv("CLEO_ROVER_HERMES_MODEL", "hermes-agent"))
     args = parser.parse_args(argv)
     if not args.token:
         raise SystemExit("Missing --token or CLEO_ROVER_TELEGRAM_TOKEN")
     if not args.allowed_user_id:
         raise SystemExit("Missing --allowed-user-id or CLEO_ROVER_TELEGRAM_ALLOWED_USER_ID")
-    return loop(AgentConfig(token=args.token, allowed_user_id=int(args.allowed_user_id), workdir=args.workdir, dry_run=args.dry_run))
+    return loop(AgentConfig(
+        token=args.token,
+        allowed_user_id=int(args.allowed_user_id),
+        workdir=args.workdir,
+        dry_run=args.dry_run,
+        hermes_api_base=args.hermes_api_base,
+        hermes_api_key=args.hermes_api_key,
+        hermes_model=args.hermes_model,
+    ))
 
 
 if __name__ == "__main__":
