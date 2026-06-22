@@ -1,4 +1,4 @@
-from rover.brain import choose_body_intent, choose_escape_turn, extract_scan_result
+from rover.brain import choose_body_intent, choose_escape_turn, extract_scan_result, supervisor_result_summary
 from rover.models import BodyIntentCommand
 from rover.supervisor import intent_to_actions
 
@@ -81,7 +81,28 @@ def test_supervised_rotate_uses_floor_calibration():
     assert drive["command"] == {"linear": 0.0, "turn": 0.65, "duration_ms": 550}
 
 
+def test_supervised_move_uses_floor_pulse_not_buzz_tick():
+    actions = intent_to_actions(BodyIntentCommand(intent="move_step", mood="focused", params={"forward_cm": 3}))
+    drive = next(action for action in actions if action["kind"] == "drive")
+    assert drive["command"] == {"linear": 0.34, "turn": 0.0, "duration_ms": 220}
+
+
 def test_extract_scan_result_from_supervisor_response():
     scan = scan_result((0, 55))
     result = {"applied": [{"kind": "expression", "result": {}}, {"kind": "scan", "result": scan}]}
     assert extract_scan_result(result) is scan
+
+
+def test_supervisor_result_summary_includes_drive_and_scan_context():
+    scan = scan_result((-15, 300), (0, 200), (15, 120))
+    result = {
+        "applied": [
+            {"kind": "drive", "result": {"command": {"linear": 0.34, "turn": 0, "duration_ms": 220}}},
+            {"kind": "scan", "result": scan},
+        ],
+        "snapshot": {"sensors": {"front_distance_cm": 200}, "range_state": {"state": "clear"}},
+    }
+    summary = supervisor_result_summary(result)
+    assert summary["drive"]["duration_ms"] == 220
+    assert summary["scan"]["best_bearing_deg"] == -15.0
+    assert summary["front_distance_cm"] == 200

@@ -109,8 +109,10 @@ def intent_to_actions(command: BodyIntentCommand) -> list[dict[str, Any]]:
         actions.append({"kind": "turret", "command": TurretCommand(pan_deg=float(p.get("pan_deg", 0))).model_dump()})
     elif command.intent == "move_step":
         forward_cm = max(-12.0, min(12.0, float(p.get("forward_cm", 8))))
-        linear = 0.30 if forward_cm >= 0 else -0.26
-        duration = int(min(240, max(120, abs(forward_cm) * 24)))
+        # Floor testing showed the old 120ms 3cm pulse mostly buzzed. Keep the
+        # command tiny, but long enough to overcome static friction.
+        linear = 0.34 if forward_cm >= 0 else -0.30
+        duration = int(min(360, max(220, abs(forward_cm) * 55)))
         actions.append({"kind": "drive", "command": DriveCommand(linear=linear, turn=0, duration_ms=duration).model_dump()})
     elif command.intent == "rotate_step":
         # Floor calibration from supervised testing: 0.65 turns clearly without

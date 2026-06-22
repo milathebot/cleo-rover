@@ -64,6 +64,33 @@ def extract_scan_result(supervisor_result: dict[str, Any]) -> dict[str, Any] | N
     return None
 
 
+def supervisor_result_summary(supervisor_result: dict[str, Any]) -> dict[str, Any]:
+    """Small operator-friendly summary for live brain logs."""
+    summary: dict[str, Any] = {}
+    for applied in supervisor_result.get("applied") or []:
+        kind = applied.get("kind")
+        result = applied.get("result") or {}
+        if kind == "drive" and isinstance(result, dict):
+            summary["drive"] = result.get("command")
+        elif kind == "scan" and isinstance(result, dict):
+            observations = scan_observations(result)
+            if observations:
+                best = max(observations, key=lambda o: o["distance_cm"])
+                center = [o for o in observations if abs(o["bearing_deg"]) < 5]
+                summary["scan"] = {
+                    "best_bearing_deg": best["bearing_deg"],
+                    "best_distance_cm": best["distance_cm"],
+                    "center_distance_cm": center[0]["distance_cm"] if center else None,
+                    "samples": len(observations),
+                }
+    snapshot = supervisor_result.get("snapshot") or {}
+    sensors = snapshot.get("sensors") or {}
+    range_state = snapshot.get("range_state") or {}
+    summary["front_distance_cm"] = sensors.get("front_distance_cm")
+    summary["range_state"] = range_state.get("state")
+    return summary
+
+
 def choose_body_intent(snapshot: dict[str, Any], *, zone: str, last_intent: str | None = None, last_scan: dict[str, Any] | None = None) -> dict[str, Any]:
     """Tiny PC/Hermes-side policy: scan often, move rarely, never raw motor duty."""
     flags = set(snapshot.get("safety_flags") or [])
@@ -155,7 +182,13 @@ class BrainLoop:
             try:
                 result = self.once()
                 if self.supervised_body:
-                    print(json.dumps({"ok": True, "intent": result["intent"], "accepted": result["result"].get("accepted"), "reason": result["result"].get("reason")}))
+                    print(json.dumps({
+                        "ok": True,
+                        "intent": result["intent"],
+                        "accepted": result["result"].get("accepted"),
+                        "reason": result["result"].get("reason"),
+                        "summary": supervisor_result_summary(result["result"]),
+                    }))
                 else:
                     decision = result["tick"].get("decision", {})
                     print(json.dumps({"ok": True, "behavior": decision.get("behavior"), "reason": decision.get("reason"), "applied": result["tick"].get("applied", [])}))
