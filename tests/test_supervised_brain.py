@@ -12,6 +12,15 @@ def blocked_snapshot(distance=56.0):
     }
 
 
+def clear_snapshot(distance=120.0):
+    return {
+        "safety_flags": [],
+        "range_state": {"state": "clear"},
+        "sensors": {"front_distance_cm": distance},
+        "status": {"motors_armed": True},
+    }
+
+
 def scan_result(*pairs):
     return {
         "ok": True,
@@ -49,6 +58,21 @@ def test_blocked_after_scan_rotates_toward_clearest_side():
 def test_blocked_after_rotate_rescans_before_moving():
     intent = choose_body_intent(blocked_snapshot(), zone="office", last_intent="rotate_step")
     assert intent["intent"] == "scan"
+
+
+def test_narrow_path_after_scan_rotates_toward_clear_side():
+    scan = scan_result((-35, 58), (-15, 72), (0, 82), (15, 96), (35, 145))
+    intent = choose_body_intent(clear_snapshot(82), zone="office", last_intent="scan", last_scan=scan)
+    assert intent["intent"] == "rotate_step"
+    assert intent["params"]["deg"] == 25.0
+    assert intent["params"]["reason"] == "clearest_scan_after_narrow_path"
+
+
+def test_narrow_path_without_clear_side_holds_confused():
+    scan = scan_result((-35, 58), (-15, 64), (0, 82), (15, 70), (35, 75))
+    intent = choose_body_intent(clear_snapshot(82), zone="office", last_intent="scan", last_scan=scan)
+    assert intent["intent"] == "mood"
+    assert intent["mood"] == "confused"
 
 
 def test_supervised_rotate_uses_floor_calibration():

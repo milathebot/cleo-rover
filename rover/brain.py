@@ -96,6 +96,15 @@ def choose_body_intent(snapshot: dict[str, Any], *, zone: str, last_intent: str 
     if last_intent == "move_step":
         return {"intent": "scan", "mood": "thinking", "speech": "Checking path.", "params": {"zone": zone, "angles": [-35, -15, 0, 15, 35]}}
     if last_intent == "scan" and distance is not None and float(distance) < 90.0:
+        escape = choose_escape_turn(last_scan, minimum_clear_cm=90.0)
+        if escape:
+            direction = "right" if escape["deg"] > 0 else "left"
+            return {
+                "intent": "rotate_step",
+                "mood": "focused",
+                "speech": f"Path narrow. Turning {direction}.",
+                "params": {"deg": escape["deg"], "reason": "clearest_scan_after_narrow_path", "bearing_deg": escape["bearing_deg"], "distance_cm": escape["distance_cm"]},
+            }
         return {"intent": "mood", "mood": "confused", "speech": "I scanned, but the path is not open enough.", "params": {}}
     return {"intent": "move_step", "mood": "focused", "speech": "Tiny step.", "params": {"forward_cm": 3}}
 
