@@ -1,16 +1,116 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import os
+import re
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from .choreo import RGB_MODES, rgb_payload, run_dance, run_presence_tick
 
 DEFAULT_BASE = "http://127.0.0.1:8099"
+
+
+def compact_json_text(value: Any, *, max_chars: int = 2200) -> str:
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return text if len(text) <= max_chars else text[: max_chars - 3] + "..."
+
+
+def parse_json_object(text: str) -> dict[str, Any]:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
+        stripped = re.sub(r"\s*```$", "", stripped).strip()
+    try:
+        value = json.loads(stripped)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", stripped, flags=re.S)
+        if not match:
+            raise
+        value = json.loads(match.group(0))
+    if not isinstance(value, dict):
+        raise ValueError("vision response was not a JSON object")
+    return value
+
+
+def hermes_vision_analysis(snapshot: dict[str, Any], *, zone: str, prompt: str | None = None) -> dict[str, Any]:
+    base = os.getenv("CLEO_ROVER_HERMES_API_BASE")
+    key = os.getenv("CLEO_ROVER_HERMES_API_KEY")
+    model = os.getenv("CLEO_ROVER_HERMES_MODEL", "hermes-agent")
+    if not base or not key:
+        raise SystemExit("Missing CLEO_ROVER_HERMES_API_BASE/CLEO_ROVER_HERMES_API_KEY for vision-label")
+    capture = snapshot.get("capture") or {}
+    rel_path = capture.get("path")
+    if not rel_path:
+        raise SystemExit("Snapshot did not return capture.path")
+    image_path = Path(str(rel_path)).expanduser()
+    if not image_path.is_absolute():
+        image_path = Path.cwd() / image_path
+    if not image_path.exists():
+        raise SystemExit(f"Snapshot image not found: {image_path}")
+    b64 = base64.b64encode(image_path.read_bytes()).decode()
+    data_url = f"data:image/jpeg;base64,{b64}"
+    sensors = snapshot.get("sensors") or {}
+    turret = snapshot.get("turret") or {}
+    user_text = prompt or (
+        "Analyze this rover camera snapshot for safe indoor navigation and first-adventure readiness. "
+        "Return JSON only with: summary, labels, objects, hazards, clear_path, adventure_readiness, confidence. "
+        "Use coarse labels only. Note cats/people/cables/stairs/liquid/clutter if visible."
+    )
+    user_text += (
+        f"\nZone: {zone}. Snapshot path: {rel_path}. "
+        f"Turret bearing: {turret.get('pan_deg')} deg. "
+        f"Ultrasonic front distance: {sensors.get('front_distance_cm')} cm. "
+        f"Battery: {sensors.get('battery_voltage')} V / {sensors.get('battery_percent')}%."
+    )
+    payload = {
+        "model": model,
+        "stream": False,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You label images for Pip, a small office rover. Be conservative for safety. "
+                    "Return valid JSON only. summary must be one short sentence. labels is a short string list. "
+                    "objects is a list of {label, position, confidence}. hazards is a string list. "
+                    "clear_path is boolean. adventure_readiness is one of: bench_only, observe_only, ready_for_tiny_floor_step."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {"type": "image_url", "image_url": {"url": data_url, "detail": "low"}},
+                ],
+            },
+        ],
+    }
+    api_base = base.rstrip("/")
+    url = api_base + "/chat/completions" if api_base.endswith("/v1") else api_base + "/v1/chat/completions"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        method="POST",
+        headers={"content-type": "application/json", "authorization": f"Bearer {key}"},
+    )
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        data = json.loads(resp.read().decode())
+    content = str(data["choices"][0]["message"]["content"])
+    analysis = parse_json_object(content)
+    analysis.setdefault("summary", "Scene labeled by Hermes vision.")
+    analysis.setdefault("labels", [])
+    analysis.setdefault("objects", [])
+    analysis.setdefault("confidence", 0.55)
+    analysis["zone"] = zone
+    analysis["snapshot_path"] = str(rel_path)
+    analysis["source"] = "hermes_vision"
+    return analysis
 
 
 def request(base: str, method: str, path: str, payload: dict[str, Any] | None = None, timeout: float = 5) -> dict[str, Any]:
@@ -52,6 +152,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("last-seen")
     sub.add_parser("motion-check")
     sub.add_parser("look-around")
+
+    vision_label = sub.add_parser("vision-label")
+    vision_label.add_argument("--zone", default="office")
+    vision_label.add_argument("--prompt", default=None)
+    vision_label.add_argument("--speak", action="store_true")
+    vision_label.add_argument("--compact", action="store_true", help="Print compact adventure-ready result")
 
     prune_data = sub.add_parser("prune-data")
     prune_data.add_argument("--keep-days", type=int, default=30)
@@ -201,6 +307,36 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "POST", "/vision/motion", timeout=30)
     elif args.cmd == "look-around":
         result = request(args.base, "POST", "/presence/look-around", timeout=20)
+    elif args.cmd == "vision-label":
+        snapshot = request(args.base, "POST", "/vision/snapshot", timeout=45)
+        analysis = hermes_vision_analysis(snapshot, zone=args.zone, prompt=args.prompt)
+        analysis_result = request(args.base, "POST", "/vision/analysis", analysis, timeout=20)
+        speak_result = None
+        if args.speak:
+            line = f"I see {analysis.get('summary', 'the room')}."
+            readiness = analysis.get("adventure_readiness")
+            hazards = analysis.get("hazards") or []
+            if hazards:
+                line += " I noticed possible hazards, so I will stay cautious."
+            elif readiness == "ready_for_tiny_floor_step":
+                line += " It looks clear enough for one tiny supervised step."
+            else:
+                line += " I will keep observing safely for now."
+            speak_result = request(args.base, "POST", f"/speech/say?text={urllib.parse.quote(line[:220])}", timeout=20)
+        compact = {
+            "ok": True,
+            "zone": args.zone,
+            "snapshot_path": (snapshot.get("capture") or {}).get("path"),
+            "summary": analysis.get("summary"),
+            "labels": analysis.get("labels"),
+            "objects": analysis.get("objects"),
+            "hazards": analysis.get("hazards"),
+            "clear_path": analysis.get("clear_path"),
+            "adventure_readiness": analysis.get("adventure_readiness"),
+            "confidence": analysis.get("confidence"),
+            "spoken": bool(speak_result and speak_result.get("ok")),
+        }
+        result = compact if args.compact else {"ok": True, "snapshot": snapshot, "analysis": analysis, "analysis_result": analysis_result, "speech": speak_result}
     elif args.cmd == "remember-room":
         result = request(args.base, "POST", f"/presence/remember-room?zone={args.zone}", timeout=45)
     elif args.cmd == "prune-data":

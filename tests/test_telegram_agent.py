@@ -52,6 +52,10 @@ def test_parse_pip_safe_commands():
     assert error is None
     assert argv == ["cleo-rover", "pip", "observe"]
 
+    argv, error = parse_rover_command("/rover vision-label --zone office --speak --compact")
+    assert error is None
+    assert argv == ["cleo-rover", "vision-label", "--zone", "office", "--speak", "--compact"]
+
 
 def test_parse_floor_precheck_and_estop():
     argv, error = parse_rover_command("/rover floor-precheck --zone living-room")
