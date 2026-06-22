@@ -13,7 +13,7 @@ from .config import load_config
 from .drivers import RoverBody
 from .hub import fetch_hub_snapshot
 from .mapping import map_summary, observation_items, scan_item, semantic_events_from_analysis
-from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
+from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
 from .supervisor import intent_to_actions, supervisor_snapshot, validate_intent
 from .persistence import RoverStore
@@ -607,6 +607,70 @@ async def reactive_turn_toward(best: dict | None) -> dict:
     return await rotate_step(RotateStepCommand(deg=deg, require_permission=True))
 
 
+def battery_safety_summary(sensors: dict) -> dict:
+    percent = sensors.get("battery_percent")
+    voltage = sensors.get("battery_voltage")
+    recommendation = "ok_for_gentle_testing"
+    if percent is not None:
+        if float(percent) < 30:
+            recommendation = "charge_before_movement"
+        elif float(percent) < 50:
+            recommendation = "gentle_tests_only"
+    if voltage is not None and float(voltage) < 7.0:
+        recommendation = "charge_before_movement"
+    return {"battery_percent": percent, "battery_voltage": voltage, "recommendation": recommendation}
+
+
+def compact_action(item: dict) -> dict:
+    out = {"kind": item.get("kind")}
+    for key in ("cycle", "reason", "front_distance_cm"):
+        if key in item:
+            out[key] = item[key]
+    if item.get("summary"):
+        summary = item["summary"]
+        out["scan"] = {"best": summary.get("best"), "center": summary.get("center"), "samples": len(summary.get("samples") or [])}
+    result = item.get("result")
+    if isinstance(result, dict):
+        if result.get("command"):
+            out["command"] = result["command"]
+        elif result.get("path"):
+            out["path"] = result["path"]
+        elif result.get("reason"):
+            out["result_reason"] = result["reason"]
+    return out
+
+
+def plan_summary(plan: list[dict]) -> dict:
+    counts: dict[str, int] = {}
+    front_values: list[float] = []
+    last_action: dict | None = None
+    best_scan: dict | None = None
+    for item in plan:
+        kind = str(item.get("kind"))
+        counts[kind] = counts.get(kind, 0) + 1
+        if item.get("front_distance_cm") is not None:
+            front_values.append(float(item["front_distance_cm"]))
+        if item.get("kind") in {"crawl", "turn", "reverse", "stop", "hold", "corner-trap", "reflex-stop"}:
+            last_action = compact_action(item)
+        summary = item.get("summary") or {}
+        best = summary.get("best")
+        if best and (best_scan is None or float(best.get("distance_cm", 0)) > float(best_scan.get("distance_cm", 0))):
+            best_scan = best
+    return {
+        "counts": counts,
+        "min_front_distance_cm": round(min(front_values), 1) if front_values else None,
+        "max_front_distance_cm": round(max(front_values), 1) if front_values else None,
+        "best_scan": best_scan,
+        "last_action": last_action,
+        "corner_trap": counts.get("corner-trap", 0) > 0,
+        "reflex_stop": counts.get("reflex-stop", 0) > 0,
+    }
+
+
+def compact_plan(plan: list[dict]) -> list[dict]:
+    return [compact_action(item) for item in plan]
+
+
 @app.get("/supervisor/status")
 def supervisor_status() -> dict:
     return supervisor_snapshot(
@@ -750,22 +814,124 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
             blocked_streak += 1
 
     await body.stop()
-    return {"ok": True, "task": movement_grant | {"zone": command.zone}, "plan": plan, "event": event.model_dump(), "safety": "Pi-side sense/decide/act loop with persistent forward watchdog and no forward crawl below front_clear_cm."}
+    sensors_after = body.sensors()
+    summary = plan_summary(plan)
+    response = {
+        "ok": True,
+        "task": movement_grant | {"zone": command.zone},
+        "summary": summary,
+        "battery": battery_safety_summary(sensors_after),
+        "event": event.model_dump(),
+        "safety": "Pi-side sense/decide/act loop with persistent forward watchdog and no forward crawl below front_clear_cm.",
+    }
+    response["plan"] = compact_plan(plan) if command.compact else plan
+    return response
 
 
 @app.post("/tasks/vision-awareness")
 async def vision_awareness_task(command: VisionAwarenessCommand) -> dict:
     capture = capture_camera_snapshot(CONFIG.camera.capture_dir, width=CONFIG.camera.width, height=CONFIG.camera.height) if body.mode == "hardware" and command.capture else None
     scan = await visual_map_scan(VisualMapScanCommand(zone=command.zone, angles=command.angles, settle_ms=250, capture_each_angle=False)) if command.scan else None
+    scan_summary = scan_observation_summary(scan) if scan else None
+    placeholder_analysis = None
+    if command.remember_placeholder and capture and capture.get("ok"):
+        placeholder_analysis = {
+            "summary": "Captured scene awaiting external vision labels.",
+            "labels": ["scene"],
+            "objects": [],
+            "confidence": 0.25,
+            "zone": command.zone,
+            "snapshot_path": capture.get("path"),
+            "source": "vision_awareness_placeholder",
+        }
     event = remember_event(
         RoverEvent(
             kind=RoverEventKind.camera_snapshot,
             source="vision_awareness",
             label=f"vision awareness {command.zone}",
-            payload={"zone": command.zone, "capture": capture, "scan": scan, "needs_external_vision": True, "notes": command.notes},
+            payload={"zone": command.zone, "capture": capture, "scan": scan, "scan_summary": scan_summary, "placeholder_analysis": placeholder_analysis, "needs_external_vision": True, "notes": command.notes},
         )
     )
-    return {"ok": True, "zone": command.zone, "capture": capture, "scan": scan, "event": event.model_dump(), "next_step": "Send capture to Hermes vision, then POST labels/objects to /vision/analysis."}
+    response = {
+        "ok": True,
+        "zone": command.zone,
+        "capture": capture,
+        "scan_summary": scan_summary,
+        "event": event.model_dump(),
+        "placeholder_analysis": placeholder_analysis,
+        "next_step": "Send capture to Hermes vision, then POST labels/objects to /vision/analysis.",
+    }
+    if not command.compact:
+        response["scan"] = scan
+    return response
+
+
+@app.post("/tasks/little-being-loop")
+async def little_being_loop(command: LittleBeingLoopCommand) -> dict:
+    started = time.time()
+    initial_sensors = body.sensors()
+    battery = battery_safety_summary(initial_sensors)
+    movement_allowed = command.allow_movement and battery["recommendation"] != "charge_before_movement"
+    mood = ExpressionMode(command.mood) if command.mood in ExpressionMode._value2member_map_ else ExpressionMode.curious
+    await body.set_expression(ExpressionCommand(mode=mood, text="exploring" if movement_allowed else "watching", brightness=0.6))
+    steps: list[dict] = []
+    intro = remember_event(
+        RoverEvent(
+            kind=RoverEventKind.idle_tick,
+            source="little_being_loop",
+            label=f"little being loop {command.zone}",
+            payload={"zone": command.zone, "allow_movement": command.allow_movement, "movement_allowed": movement_allowed, "battery": battery, "notes": command.notes},
+        )
+    )
+
+    if command.capture_vision:
+        vision = await vision_awareness_task(VisionAwarenessCommand(zone=command.zone, capture=True, scan=True, angles=[-45, 0, 45], compact=True, notes="little being opening observation"))
+        steps.append({"kind": "observe", "result": {"capture": vision.get("capture"), "scan_summary": vision.get("scan_summary")}})
+
+    remaining = max(5, int(command.duration_seconds - (time.time() - started)))
+    explore = await reactive_explore_task(
+        ReactiveExploreCommand(
+            zone=command.zone,
+            allow_movement=movement_allowed,
+            duration_seconds=remaining,
+            max_cycles=command.explore_cycles,
+            crawl_linear=0.24,
+            front_clear_cm=130.0,
+            front_stop_cm=55.0,
+            front_emergency_cm=30.0,
+            reverse_on_blocked=True,
+            scan_angles=[-45, 0, 45],
+            compact=True,
+            notes="little being local reactive explore",
+        )
+    )
+    steps.append({"kind": "reactive-explore", "summary": explore.get("summary"), "battery": explore.get("battery"), "plan": explore.get("plan")})
+
+    if command.capture_vision and command.observe_every_cycles <= max(1, command.explore_cycles):
+        vision = await vision_awareness_task(VisionAwarenessCommand(zone=command.zone, capture=True, scan=True, angles=[-35, 0, 35], compact=True, notes="little being closing observation"))
+        steps.append({"kind": "observe", "result": {"capture": vision.get("capture"), "scan_summary": vision.get("scan_summary")}})
+
+    await body.stop()
+    final_sensors = body.sensors()
+    final_battery = battery_safety_summary(final_sensors)
+    if final_battery["recommendation"] == "charge_before_movement":
+        await body.set_expression(ExpressionCommand(mode=ExpressionMode.low_power, text="charge me", brightness=0.45))
+    else:
+        await body.set_expression(ExpressionCommand(mode=ExpressionMode.proud, text="done", brightness=0.55))
+
+    summary = {
+        "movement_allowed": movement_allowed,
+        "battery_start": battery,
+        "battery_end": final_battery,
+        "reactive": explore.get("summary"),
+        "vision_observations": sum(1 for step in steps if step.get("kind") == "observe"),
+        "duration_seconds": round(time.time() - started, 2),
+    }
+    done = remember_event(RoverEvent(kind=RoverEventKind.manual_control, source="little_being_loop", label="little being loop complete", payload={"summary": summary, "steps": steps if not command.compact else None}))
+    response = {"ok": True, "event": intro.model_dump(), "complete_event": done.model_dump(), "summary": summary, "safety": "Fast motion safety remains Pi-side: reactive explore + watchdog. Vision is awareness, not collision safety."}
+    if not command.compact:
+        response["steps"] = steps
+    return response
 
 
 @app.post("/tasks/map-floor")

@@ -183,7 +183,9 @@ def test_reactive_explore_scan_only_path():
     data = task.json()
     assert data["ok"] is True
     assert data["task"]["active"] is False
+    assert data["summary"]["counts"]["scan-only"] == 1
     assert any(item["kind"] == "scan-only" for item in data["plan"])
+    assert "observations" not in data["plan"][0]
     assert "persistent" in data["safety"]
 
 
@@ -211,8 +213,20 @@ def test_vision_awareness_endpoint_records_snapshot_event_in_sim():
     data = task.json()
     assert data["ok"] is True
     assert data["capture"] is None
-    assert data["scan"] is None
+    assert data["scan_summary"] is None
+    assert "scan" not in data
     assert data["event"]["kind"] == "camera_snapshot"
+
+
+def test_little_being_loop_observes_and_uses_reactive_layer_without_movement():
+    task = client.post("/tasks/little-being-loop", json={"zone": "office", "allow_movement": False, "duration_seconds": 8, "explore_cycles": 1, "capture_vision": False})
+    assert task.status_code == 200
+    data = task.json()
+    assert data["ok"] is True
+    assert data["summary"]["movement_allowed"] is False
+    assert "reactive" in data["summary"]
+    assert "steps" not in data
+    assert "reactive explore + watchdog" in data["safety"]
 
 
 def test_drive_rejected_in_no_motor_profile_and_step_requires_permission():

@@ -150,6 +150,7 @@ class ReactiveExploreCommand(BaseModel):
     front_emergency_cm: float = Field(default=25.0, ge=5.0, le=80.0)
     reverse_on_blocked: bool = True
     scan_angles: list[float] = Field(default_factory=lambda: [-45, 0, 45], max_length=9)
+    compact: bool = True
     notes: str | None = Field(default=None, max_length=240)
 
 
@@ -158,6 +159,20 @@ class VisionAwarenessCommand(BaseModel):
     capture: bool = True
     scan: bool = True
     angles: list[float] = Field(default_factory=lambda: [-45, 0, 45], max_length=9)
+    compact: bool = True
+    remember_placeholder: bool = True
+    notes: str | None = Field(default=None, max_length=240)
+
+
+class LittleBeingLoopCommand(BaseModel):
+    zone: str = Field(default="office", max_length=80)
+    allow_movement: bool = False
+    duration_seconds: int = Field(default=60, ge=5, le=600)
+    explore_cycles: int = Field(default=8, ge=1, le=40)
+    observe_every_cycles: int = Field(default=4, ge=1, le=20)
+    capture_vision: bool = True
+    compact: bool = True
+    mood: str = Field(default="curious", max_length=40)
     notes: str | None = Field(default=None, max_length=240)
 
 
