@@ -7,10 +7,16 @@ from pydantic import BaseModel, Field
 
 class ExpressionMode(str, Enum):
     idle = "idle"
+    happy = "happy"
+    sad = "sad"
     listening = "listening"
     thinking = "thinking"
+    confused = "confused"
     speaking = "speaking"
     alert = "alert"
+    mad = "mad"
+    focused = "focused"
+    laugh = "laugh"
     charging = "charging"
     disconnected = "disconnected"
     manual = "manual"
@@ -141,6 +147,16 @@ class MoveStepCommand(BaseModel):
 class RotateStepCommand(BaseModel):
     deg: float = Field(default=15.0, ge=-45.0, le=45.0)
     require_permission: bool = True
+
+
+class BodyIntentCommand(BaseModel):
+    """High-level PC/Hermes brain intent for the Pi body agent."""
+
+    intent: str = Field(max_length=40)
+    mood: str | None = Field(default=None, max_length=40)
+    speech: str | None = Field(default=None, max_length=240)
+    params: dict[str, Any] = Field(default_factory=dict)
+    source: str = Field(default="pc_brain", max_length=40)
 
 
 class DriveCommand(BaseModel):

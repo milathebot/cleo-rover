@@ -196,11 +196,29 @@ def test_visual_map_scan_and_look_remember_paths():
 
 
 def test_expression_and_status():
-    r = client.post("/expression", json={"mode": "listening", "text": "yes?", "brightness": 0.4})
+    r = client.post("/expression", json={"mode": "happy", "text": "yay", "brightness": 0.4})
     assert r.status_code == 200
     status = client.get("/status").json()
-    assert status["expression"]["mode"] == "listening"
-    assert status["expression"]["text"] == "yes?"
+    assert status["expression"]["mode"] == "happy"
+    assert status["expression"]["text"] == "yay"
+
+
+def test_supervisor_body_agent_contract():
+    status = client.get("/supervisor/status")
+    assert status.status_code == 200
+    data = status.json()
+    assert data["role"] == "pi_body_agent"
+    assert data["contract"]["pi_may_refuse"] is True
+
+    mood = client.post("/supervisor/intent", json={"intent": "mood", "mood": "focused", "speech": "thinking", "params": {}})
+    assert mood.status_code == 200
+    assert mood.json()["accepted"] is True
+    assert any(action["kind"] == "expression" for action in mood.json()["applied"])
+
+    move = client.post("/supervisor/intent", json={"intent": "move_step", "mood": "focused", "params": {"forward_cm": 8}})
+    assert move.status_code == 200
+    assert move.json()["accepted"] is False
+    assert "movement" in move.json()["reason"] or "motors" in move.json()["reason"] or "bench_safe" in move.json()["reason"]
 
 
 def test_expression_preview_png():

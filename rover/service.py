@@ -13,8 +13,9 @@ from .config import load_config
 from .drivers import RoverBody
 from .hub import fetch_hub_snapshot
 from .mapping import map_summary, observation_items, scan_item, semantic_events_from_analysis
-from .models import AutonomyTickCommand, BehaviorDecision, DriveCommand, ExpressionCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisualMapScanCommand
+from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisualMapScanCommand
 from .peripherals import camera_tool, capture_camera_snapshot
+from .supervisor import intent_to_actions, supervisor_snapshot, validate_intent
 from .persistence import RoverStore
 from .renderer import render_expression
 from .safety_sim import scenarios
@@ -548,6 +549,48 @@ async def revoke_movement() -> dict:
 def movement_status() -> dict:
     active = movement_grant is not None and bool(movement_grant.get("active")) and float(movement_grant.get("expires_at", 0)) > time.time()
     return {"ok": True, "active": active, "movement": movement_grant}
+
+
+@app.get("/supervisor/status")
+def supervisor_status() -> dict:
+    return supervisor_snapshot(
+        status=status().model_dump(),
+        sensors=body.sensors(),
+        movement=movement_status(),
+        autonomy=autonomy.state.model_dump(),
+    )
+
+
+@app.post("/supervisor/intent")
+async def supervisor_intent(command: BodyIntentCommand) -> dict:
+    status_now = status().model_dump()
+    sensors_now = body.sensors()
+    movement_now = movement_status()
+    ok, reason = validate_intent(command, status=status_now, sensors=sensors_now, movement=movement_now)
+    if not ok:
+        await body.stop()
+        return {"ok": False, "accepted": False, "reason": reason, "stopped": True, "snapshot": supervisor_status()}
+    actions = intent_to_actions(command)
+    applied = []
+    for action in actions:
+        kind = action["kind"]
+        payload = action.get("command") or {}
+        if kind == "stop":
+            applied.append({"kind": kind, "result": await stop()})
+        elif kind == "expression":
+            applied.append({"kind": kind, "result": await expression(ExpressionCommand.model_validate(payload))})
+        elif kind == "rgb":
+            applied.append({"kind": kind, "result": rgb(RGBCommand.model_validate(payload))})
+        elif kind == "turret":
+            applied.append({"kind": kind, "result": await turret(TurretCommand.model_validate(payload))})
+        elif kind == "scan":
+            applied.append({"kind": kind, "result": await map_scan(MapScanCommand.model_validate(payload))})
+        elif kind == "drive":
+            applied.append({"kind": kind, "result": await guarded_drive(DriveCommand.model_validate(payload), require_permission=True)})
+    if command.speech:
+        applied.append({"kind": "speech_stub", "text": command.speech})
+    event = remember_event(RoverEvent(kind=RoverEventKind.manual_control, source=command.source, label=command.intent, payload={"intent": command.model_dump(), "applied": applied}))
+    return {"ok": True, "accepted": True, "reason": reason, "applied": applied, "event": event.model_dump(), "snapshot": supervisor_status()}
 
 
 @app.post("/tasks/map-floor")

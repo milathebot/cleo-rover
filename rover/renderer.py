@@ -17,10 +17,16 @@ Palette = tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]
 
 PALETTES: dict[ExpressionMode, Palette] = {
     ExpressionMode.idle: ((86, 42, 180), (16, 210, 220), (230, 68, 190)),
+    ExpressionMode.happy: ((40, 230, 170), (90, 255, 230), (255, 120, 230)),
+    ExpressionMode.sad: ((12, 22, 70), (35, 80, 180), (110, 80, 160)),
     ExpressionMode.listening: ((20, 130, 255), (40, 230, 255), (110, 90, 255)),
     ExpressionMode.thinking: ((92, 35, 180), (180, 70, 255), (45, 210, 235)),
+    ExpressionMode.confused: ((255, 170, 45), (140, 75, 255), (60, 230, 255)),
     ExpressionMode.speaking: ((250, 58, 190), (60, 220, 255), (170, 80, 255)),
     ExpressionMode.alert: ((255, 132, 32), (255, 72, 72), (250, 210, 90)),
+    ExpressionMode.mad: ((255, 20, 45), (120, 0, 20), (255, 130, 40)),
+    ExpressionMode.focused: ((20, 70, 170), (60, 210, 255), (230, 245, 255)),
+    ExpressionMode.laugh: ((255, 120, 230), (255, 210, 80), (80, 245, 255)),
     ExpressionMode.charging: ((50, 230, 160), (72, 170, 255), (160, 90, 255)),
     ExpressionMode.disconnected: ((55, 70, 100), (120, 145, 190), (20, 30, 50)),
     ExpressionMode.manual: ((50, 255, 130), (80, 220, 255), (30, 160, 80)),
@@ -35,10 +41,16 @@ PALETTES: dict[ExpressionMode, Palette] = {
 
 LABELS: dict[ExpressionMode, str] = {
     ExpressionMode.idle: "CLEO",
+    ExpressionMode.happy: "HAPPY",
+    ExpressionMode.sad: "QUIET",
     ExpressionMode.listening: "LISTENING",
     ExpressionMode.thinking: "THINKING",
+    ExpressionMode.confused: "CONFUSED",
     ExpressionMode.speaking: "SPEAKING",
     ExpressionMode.alert: "ALERT",
+    ExpressionMode.mad: "NOPE",
+    ExpressionMode.focused: "FOCUSED",
+    ExpressionMode.laugh: "HEHE",
     ExpressionMode.charging: "CHARGING",
     ExpressionMode.disconnected: "OFFLINE",
     ExpressionMode.manual: "MANUAL",

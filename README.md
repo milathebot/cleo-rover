@@ -253,6 +253,22 @@ For a fresh Pi or after pulling new code:
 7. Install the Telegram agent and profile-switch sudoers helper only after local service checks pass.
 8. Use floor-cautious mode only for deliberate floor tests with a clear area and an active movement arm.
 
+## Hybrid body/brain control
+
+Cleo Rover now uses a hybrid control contract for supervised autonomy:
+
+- Pi body agent: local safety, estop, sensors, camera, RGB/screen moods, turret, and tiny movement execution.
+- PC/Hermes brain: higher-level perception/planning that sends only high-level intents.
+- The Pi validates every intent and may refuse movement if local safety is unhappy.
+
+Useful local checks:
+
+```bash
+cleo-rover supervisor-status
+cleo-rover body-intent mood --mood focused --speech "ready"
+cleo-rover-brain --supervised-body --zone office --once
+```
+
 ## Hardware mode operating rule
 
 Normal powered-on operation should use the no-motor presence profile:

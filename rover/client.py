@@ -68,6 +68,15 @@ def main(argv: list[str] | None = None) -> int:
     floor_map_dry_run.add_argument("--steps", type=int, default=3)
     sub.add_parser("movement-status")
     sub.add_parser("movement-revoke")
+    sub.add_parser("supervisor-status")
+
+    body_intent = sub.add_parser("body-intent")
+    body_intent.add_argument("intent", choices=["status", "stop", "scan", "look", "say", "mood", "move_step", "rotate_step", "idle"])
+    body_intent.add_argument("--mood", default=None)
+    body_intent.add_argument("--speech", default=None)
+    body_intent.add_argument("--zone", default="unknown")
+    body_intent.add_argument("--forward-cm", type=float, default=8.0)
+    body_intent.add_argument("--deg", type=float, default=15.0)
 
     map_scan = sub.add_parser("map-scan")
     map_scan.add_argument("--zone", default="unknown")
@@ -145,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     drive.add_argument("--duration-ms", type=int, default=250)
 
     expr = sub.add_parser("expression")
-    expr.add_argument("mode", choices=["idle", "listening", "thinking", "speaking", "alert", "charging", "disconnected", "manual", "curious", "watching", "seeking", "sleeping", "shy", "proud", "low_power"])
+    expr.add_argument("mode", choices=["idle", "happy", "sad", "listening", "thinking", "confused", "speaking", "alert", "mad", "focused", "laugh", "charging", "disconnected", "manual", "curious", "watching", "seeking", "sleeping", "shy", "proud", "low_power"])
     expr.add_argument("--text", default=None)
     expr.add_argument("--brightness", type=float, default=0.6)
 
@@ -213,6 +222,15 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "GET", "/movement/status")
     elif args.cmd == "movement-revoke":
         result = request(args.base, "POST", "/movement/revoke")
+    elif args.cmd == "supervisor-status":
+        result = request(args.base, "GET", "/supervisor/status")
+    elif args.cmd == "body-intent":
+        params = {"zone": args.zone}
+        if args.intent == "move_step":
+            params["forward_cm"] = args.forward_cm
+        if args.intent == "rotate_step":
+            params["deg"] = args.deg
+        result = request(args.base, "POST", "/supervisor/intent", {"intent": args.intent, "mood": args.mood, "speech": args.speech, "params": params, "source": "cli"}, timeout=30)
     elif args.cmd == "movement-grant":
         result = request(args.base, "POST", "/movement/grant", {
             "task": args.task,
