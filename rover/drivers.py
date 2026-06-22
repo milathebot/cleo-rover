@@ -63,7 +63,7 @@ class RoverBody:
         self._stop_task: asyncio.Task | None = None
         self._watchdog_task: asyncio.Task | None = None
         self.display = NullDisplay()
-        if mode == "hardware":
+        if mode == "hardware" and self.config.display.type not in {"none", "disabled", "off"}:
             self.display = ST7789Display(self.config.display)
         self.display_ready = self.display.ready
         self.hardware: FreenoveHardware | None = None
