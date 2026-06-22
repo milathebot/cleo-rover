@@ -55,6 +55,14 @@ def test_blocked_after_scan_rotates_toward_clearest_side():
     assert intent["params"]["reason"] == "clearest_scan"
 
 
+def test_blocked_after_scan_rotates_toward_modestly_better_side():
+    scan = scan_result((-45, 70.3), (-25, 61), (0, 54), (25, 58), (45, 62))
+    intent = choose_body_intent(blocked_snapshot(distance=54), zone="office", last_intent="scan", last_scan=scan)
+    assert intent["intent"] == "rotate_step"
+    assert intent["params"]["deg"] == -25.0
+    assert intent["params"]["distance_cm"] == 70.3
+
+
 def test_blocked_after_rotate_rescans_before_moving():
     intent = choose_body_intent(blocked_snapshot(), zone="office", last_intent="rotate_step")
     assert intent["intent"] == "scan"

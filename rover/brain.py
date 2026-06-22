@@ -42,7 +42,7 @@ def scan_observations(scan_result: dict[str, Any] | None) -> list[dict[str, Any]
     return out
 
 
-def choose_escape_turn(scan_result: dict[str, Any] | None, *, minimum_clear_cm: float = 72.0) -> dict[str, Any] | None:
+def choose_escape_turn(scan_result: dict[str, Any] | None, *, minimum_clear_cm: float = 72.0, min_improvement_cm: float = 18.0) -> dict[str, Any] | None:
     """Pick a conservative turn toward the clearest scanned side."""
     observations = scan_observations(scan_result)
     side_observations = [o for o in observations if abs(o["bearing_deg"]) >= 15.0]
@@ -51,7 +51,7 @@ def choose_escape_turn(scan_result: dict[str, Any] | None, *, minimum_clear_cm: 
     best = max(side_observations, key=lambda o: (o["distance_cm"], abs(o["bearing_deg"])))
     center_distances = [o["distance_cm"] for o in observations if abs(o["bearing_deg"]) < 12.0]
     center = min(center_distances) if center_distances else 0.0
-    if best["distance_cm"] < minimum_clear_cm and best["distance_cm"] < center + 18.0:
+    if best["distance_cm"] < minimum_clear_cm and best["distance_cm"] < center + min_improvement_cm:
         return None
     deg = 25.0 if best["bearing_deg"] > 0 else -25.0
     return {"deg": deg, "bearing_deg": best["bearing_deg"], "distance_cm": best["distance_cm"]}
@@ -105,7 +105,10 @@ def choose_body_intent(snapshot: dict[str, Any], *, zone: str, last_intent: str 
         if last_intent == "rotate_step":
             return {"intent": "scan", "mood": "thinking", "speech": "Checking the new angle.", "params": {"zone": zone, "angles": [-45, -25, 0, 25, 45]}}
         if last_intent == "scan":
-            escape = choose_escape_turn(last_scan)
+            # If the front is already near/blocked, do not sit there waiting
+            # forever. A side that is modestly better is enough for a small
+            # escape turn, then we re-scan before moving.
+            escape = choose_escape_turn(last_scan, minimum_clear_cm=60.0, min_improvement_cm=8.0)
             if escape:
                 direction = "right" if escape["deg"] > 0 else "left"
                 return {
