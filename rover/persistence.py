@@ -60,17 +60,24 @@ class RoverStore:
         with self.connect() as con:
             con.executescript(SCHEMA)
 
-    def save_state(self, state: AutonomyState) -> None:
+    def save_json(self, key: str, value: Any) -> None:
         with self.connect() as con:
             con.execute(
-                "INSERT OR REPLACE INTO kv(key,value,updated_at) VALUES('autonomy_state',?,?)",
-                (state.model_dump_json(), time.time()),
+                "INSERT OR REPLACE INTO kv(key,value,updated_at) VALUES(?,?,?)",
+                (key, json.dumps(value), time.time()),
             )
 
-    def load_state(self) -> AutonomyState | None:
+    def load_json(self, key: str) -> Any | None:
         with self.connect() as con:
-            row = con.execute("SELECT value FROM kv WHERE key='autonomy_state'").fetchone()
-        return AutonomyState.model_validate_json(row["value"]) if row else None
+            row = con.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+        return json.loads(row["value"]) if row else None
+
+    def save_state(self, state: AutonomyState) -> None:
+        self.save_json("autonomy_state", state.model_dump(mode="json"))
+
+    def load_state(self) -> AutonomyState | None:
+        data = self.load_json("autonomy_state")
+        return AutonomyState.model_validate(data) if data else None
 
     def save_cooldowns(self, cooldowns: dict[str, float]) -> None:
         with self.connect() as con:

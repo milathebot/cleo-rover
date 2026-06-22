@@ -43,7 +43,7 @@ pip_identity = {
         "independence": 0.70,
     },
 }
-pip_state = {
+DEFAULT_PIP_STATE = {
     "mode": "social",
     "awake": True,
     "home_base": "office",
@@ -56,7 +56,13 @@ pip_state = {
     "boredom": 0.35,
     "mood": "curious",
 }
-pip_interrupts: list[dict] = []
+pip_state = {**DEFAULT_PIP_STATE, **(store.load_json("pip_state") or {})}
+pip_interrupts: list[dict] = list(store.load_json("pip_interrupts") or [])
+
+
+def save_pip_runtime() -> None:
+    store.save_json("pip_state", pip_state)
+    store.save_json("pip_interrupts", pip_interrupts[-50:])
 
 app = FastAPI(title="Cleo Rover Mk1 Body Service", version="0.1.0")
 
@@ -700,6 +706,14 @@ def compact_plan(plan: list[dict]) -> list[dict]:
     return [compact_action(item) for item in plan]
 
 
+def pip_recent_interrupt(kind: str, *, within_seconds: float) -> dict | None:
+    cutoff = time.time() - within_seconds
+    for item in reversed(pip_interrupts):
+        if item.get("kind") == kind and float(item.get("timestamp") or 0) >= cutoff:
+            return item
+    return None
+
+
 def pip_enqueue_interrupt(priority: str, message: str, *, kind: str = "note", payload: dict | None = None) -> dict:
     item = {
         "id": f"pip-{int(time.time() * 1000)}",
@@ -713,6 +727,7 @@ def pip_enqueue_interrupt(priority: str, message: str, *, kind: str = "note", pa
     pip_interrupts.append(item)
     del pip_interrupts[:-50]
     remember_event(RoverEvent(kind=RoverEventKind.manual_control, source="pip", label=f"interrupt:{kind}", payload=item))
+    save_pip_runtime()
     return item
 
 
@@ -804,6 +819,7 @@ async def pip_mode(command: PipModeCommand) -> dict:
     else:
         await pip_set_expression(ExpressionMode.curious, "pip", 0.55)
     event = remember_event(RoverEvent(kind=RoverEventKind.manual_control, source="pip", label=f"mode:{command.mode}", payload={"mode": command.mode, "reason": command.reason}))
+    save_pip_runtime()
     return {"ok": True, "mode": command.mode, "event": event.model_dump(), "state": pip_public_state()}
 
 
@@ -825,6 +841,7 @@ async def pip_greet(source: str = "operator") -> dict:
     await pip_set_expression(ExpressionMode.happy, "hi noot", 0.6)
     rgb_result = rgb(RGBCommand(red=90, green=180, blue=255, brightness=28))
     event = remember_event(RoverEvent(kind=RoverEventKind.manual_control, source="pip", label="greet", payload={"source": source, "line": "hi noot."}))
+    save_pip_runtime()
     return {"ok": True, "line": "hi noot.", "rgb": rgb_result, "event": event.model_dump(), "state": pip_public_state()}
 
 
@@ -839,6 +856,7 @@ def pip_interrupt_list(mark_delivered: bool = False) -> dict:
     if mark_delivered:
         for item in pending:
             item["delivered"] = True
+        save_pip_runtime()
     return {"ok": True, "interrupts": pending, "count": len(pending)}
 
 
@@ -851,11 +869,25 @@ async def pip_life_tick(command: PipLifeTickCommand) -> dict:
 
     if pip_state["mode"] == "sleep" and not command.force:
         await pip_set_expression(ExpressionMode.sleeping, "sleep", 0.22)
+        save_pip_runtime()
         return {"ok": True, "decision": "sleep", "reason": "Pip is sleeping", "battery": battery, "actions": actions, "state": pip_public_state()}
 
     if battery["recommendation"] == "charge_before_movement":
+        pip_state["mood"] = "low_power"
+        pip_state["boredom"] = 0.0
+        recent = pip_recent_interrupt("rescue", within_seconds=900)
+        if recent and (recent.get("payload") or {}).get("battery"):
+            await pip_set_expression(ExpressionMode.sleeping, "charging", 0.20)
+            save_pip_runtime()
+            return {"ok": True, "decision": "resting_low_power", "battery": battery, "actions": [{"kind": "rest", "reason": "recent charge request already pending", "interrupt": recent}], "state": pip_public_state()}
         result = await pip_rescue("my battery feels too low for exploring. please charge me?", priority="medium", payload={"battery": battery})
         return {"ok": True, "decision": "low_power", "battery": battery, "actions": [result], "state": pip_public_state()}
+
+    if pip_state.get("mood") == "low_power":
+        pip_state["mood"] = "curious"
+        for item in pip_interrupts:
+            if item.get("kind") == "rescue" and (item.get("payload") or {}).get("battery"):
+                item["delivered"] = True
 
     front = sensors_now.get("front_distance_cm")
     if front is not None and float(front) < 30:
@@ -884,6 +916,7 @@ async def pip_life_tick(command: PipLifeTickCommand) -> dict:
         reactive = (loop.get("summary") or {}).get("reactive") or {}
         if reactive.get("corner_trap") or reactive.get("reflex_stop"):
             actions.append(await pip_rescue("I got stuck during my patrol. can you rescue me?", priority="high", payload={"reactive": reactive}))
+        save_pip_runtime()
         return {"ok": True, "decision": "patrol", "battery": battery, "actions": actions, "state": pip_public_state()}
 
     pip_state["boredom"] = min(1.0, float(pip_state.get("boredom", 0)) + (0.18 if pip_state["mode"] in {"social", "assistant"} else 0.06))
@@ -891,6 +924,7 @@ async def pip_life_tick(command: PipLifeTickCommand) -> dict:
     observe = await vision_awareness_task(VisionAwarenessCommand(zone=str(pip_state.get("current_zone") or "office"), capture=False, scan=True, compact=True, notes="pip life tick quiet observation"))
     pip_state["last_observe_at"] = time.time()
     actions.append({"kind": "observe", "reason": patrol_reason, "scan_summary": observe.get("scan_summary")})
+    save_pip_runtime()
     return {"ok": True, "decision": "observe", "battery": battery, "actions": actions, "state": pip_public_state()}
 
 

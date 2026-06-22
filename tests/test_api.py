@@ -252,11 +252,22 @@ def test_pip_identity_modes_greet_and_interrupts():
     assert interrupts.json()["count"] >= 1
 
 
-def test_pip_life_tick_and_command_router():
+def test_pip_life_tick_and_command_router(monkeypatch):
+    from rover import service
+
     client.post("/pip/mode", json={"mode": "social", "reason": "test"})
     tick = client.post("/pip/life-tick", json={"allow_movement": False, "force": False, "reason": "test"})
     assert tick.status_code == 200
-    assert tick.json()["decision"] in {"observe", "patrol", "low_power", "rescue", "sleep"}
+    assert tick.json()["decision"] in {"observe", "patrol", "low_power", "resting_low_power", "rescue", "sleep"}
+
+    service.pip_interrupts.clear()
+    monkeypatch.setattr(service.body, "sensors", lambda: {"front_distance_cm": 120, "errors": {}, "battery_percent": 20, "battery_voltage": 6.8})
+    low = client.post("/pip/life-tick", json={"allow_movement": True, "force": True, "reason": "low battery test"})
+    assert low.status_code == 200
+    assert low.json()["decision"] == "low_power"
+    resting = client.post("/pip/life-tick", json={"allow_movement": True, "force": True, "reason": "low battery repeat"})
+    assert resting.status_code == 200
+    assert resting.json()["decision"] == "resting_low_power"
 
     status = client.post("/pip/command", json={"text": "status", "source": "test"})
     assert status.status_code == 200
