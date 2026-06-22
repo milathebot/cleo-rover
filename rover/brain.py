@@ -34,7 +34,7 @@ def choose_body_intent(snapshot: dict[str, Any], *, zone: str, last_intent: str 
     if flags & {"inconsistent_motor_safety", "sensor_errors"}:
         return {"intent": "stop", "mood": "alert", "speech": "Safety check failed. Stopping.", "params": {}}
     if range_state in {"blocked", "near"} or (distance is not None and float(distance) < 70.0):
-        return {"intent": "rotate_step", "mood": "confused", "speech": "Too close. Turning.", "params": {"deg": 14}}
+        return {"intent": "scan", "mood": "thinking", "speech": "Close obstacle. Scanning.", "params": {"zone": zone, "angles": [-45, -25, 0, 25, 45]}}
     if sensors.get("front_distance_cm") is None:
         return {"intent": "scan", "mood": "thinking", "speech": "Need range before moving.", "params": {"zone": zone, "angles": [-45, -20, 0, 20, 45]}}
     if not status.get("motors_armed"):
