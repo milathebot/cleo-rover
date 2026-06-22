@@ -290,6 +290,9 @@ def hermes_pip_response(prompt: str, context: dict[str, Any], config: AgentConfi
         return False, "Hermes bridge returned an unexpected response shape: " + _short_json(data, max_chars=900)
     if not text:
         return False, "Hermes bridge returned an empty response."
+    lowered = text.lower()
+    if "api call failed after" in lowered or "model provider failed after" in lowered:
+        return False, text[:600]
     return True, text[:600]
 
 
@@ -307,7 +310,10 @@ def maybe_handle_pip_bridge(argv: list[str], output: str, config: AgentConfig) -
     context = data.get("context") if isinstance(data.get("context"), dict) else {}
     ok, response = hermes_pip_response(prompt, context, config)
     if not ok:
-        return response + "\n\nRaw Pip relay request:\n" + output[:2500]
+        fallback = "I heard you, Noot, but my Hermes brain hiccuped for a second. I’m still awake, staying still, and ready to try again."
+        code, say_output = run_command(["cleo-rover", "say", fallback], config, timeout=25)
+        spoken = "spoken" if code == 0 else f"speech failed exit={code}: {say_output[-500:]}"
+        return f"Pip/Hermes fallback:\n{fallback}\n\n{spoken}\n\nBridge detail: {response[:500]}"
 
     code, say_output = run_command(["cleo-rover", "say", response], config, timeout=25)
     spoken = "spoken" if code == 0 else f"speech failed exit={code}: {say_output[-500:]}"
