@@ -190,7 +190,7 @@ def test_drive_rejected_in_no_motor_profile_and_step_requires_permission():
     rotate = client.post("/movement/rotate-step", json={"deg": 25, "require_permission": True})
     assert rotate.status_code == 200
     assert rotate.json()["ok"] is False
-    assert rotate.json()["command"] == {"linear": 0.0, "turn": 0.65, "duration_ms": 550}
+    assert rotate.json()["command"] == {"linear": 0.0, "turn": 0.45, "duration_ms": 300}
 
 
 def test_visual_map_scan_and_look_remember_paths():

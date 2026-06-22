@@ -115,11 +115,12 @@ def intent_to_actions(command: BodyIntentCommand) -> list[dict[str, Any]]:
         duration = int(min(360, max(220, abs(forward_cm) * 55)))
         actions.append({"kind": "drive", "command": DriveCommand(linear=linear, turn=0, duration_ms=duration).model_dump()})
     elif command.intent == "rotate_step":
-        # Floor calibration from supervised testing: 0.65 turns clearly without
-        # forward lurch, while lower values only produced a tiny tick.
+        # Escape turns must be small. A 25deg request at 0.65/550ms spun far
+        # too much during floor autonomy, so supervised turns are deliberately
+        # gentle and should be followed by another scan.
         deg = max(-35.0, min(35.0, float(p.get("deg", 10))))
-        turn = 0.65 if deg >= 0 else -0.65
-        duration = int(min(900, max(260, abs(deg) * 22)))
+        turn = 0.45 if deg >= 0 else -0.45
+        duration = int(min(320, max(120, abs(deg) * 12)))
         actions.append({"kind": "drive", "command": DriveCommand(linear=0, turn=turn, duration_ms=duration).model_dump()})
     elif command.intent in {"say", "mood", "idle", "status"}:
         pass

@@ -10,6 +10,8 @@ import urllib.request
 from typing import Any
 
 DEFAULT_BASE = "http://127.0.0.1:8099"
+MIN_FORWARD_CLEAR_CM = 120.0
+ESCAPE_ROTATE_DEG = 10.0
 
 
 def request(base: str, method: str, path: str, payload: dict[str, Any] | None = None, timeout: float = 8) -> dict[str, Any]:
@@ -53,7 +55,7 @@ def choose_escape_turn(scan_result: dict[str, Any] | None, *, minimum_clear_cm: 
     center = min(center_distances) if center_distances else 0.0
     if best["distance_cm"] < minimum_clear_cm and best["distance_cm"] < center + min_improvement_cm:
         return None
-    deg = 25.0 if best["bearing_deg"] > 0 else -25.0
+    deg = ESCAPE_ROTATE_DEG if best["bearing_deg"] > 0 else -ESCAPE_ROTATE_DEG
     return {"deg": deg, "bearing_deg": best["bearing_deg"], "distance_cm": best["distance_cm"]}
 
 
@@ -125,7 +127,7 @@ def choose_body_intent(snapshot: dict[str, Any], *, zone: str, last_intent: str 
         return {"intent": "scan", "mood": "thinking", "speech": "Motors are not armed.", "params": {"zone": zone, "angles": [-35, 0, 35]}}
     if last_intent == "move_step":
         return {"intent": "scan", "mood": "thinking", "speech": "Checking path.", "params": {"zone": zone, "angles": [-35, -15, 0, 15, 35]}}
-    if last_intent == "scan" and distance is not None and float(distance) < 90.0:
+    if last_intent == "scan" and distance is not None and float(distance) < MIN_FORWARD_CLEAR_CM:
         escape = choose_escape_turn(last_scan, minimum_clear_cm=90.0)
         if escape:
             direction = "right" if escape["deg"] > 0 else "left"

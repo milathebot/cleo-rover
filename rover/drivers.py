@@ -73,9 +73,9 @@ class RoverBody:
 
         async def drive_monitor() -> None:
             deadline = time.time() + command.duration_ms / 1000
-            reflex_threshold = max(20.0, float(self.config.safety.front_stop_distance_cm))
+            reflex_threshold = max(35.0, float(self.config.safety.front_stop_distance_cm))
             while time.time() < deadline:
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.02)
                 if not self.hardware or not self.motors_armed or command.linear <= 0:
                     continue
                 sensors = FreenoveSensorReader(

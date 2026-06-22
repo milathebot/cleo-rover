@@ -35,7 +35,7 @@ def test_choose_escape_turn_picks_clear_right_side():
     scan = scan_result((-45, 45), (-25, 62), (0, 55), (25, 110), (45, 95))
     escape = choose_escape_turn(scan)
     assert escape is not None
-    assert escape["deg"] == 25.0
+    assert escape["deg"] == 10.0
     assert escape["bearing_deg"] == 25.0
 
 
@@ -43,7 +43,7 @@ def test_choose_escape_turn_picks_clear_left_side():
     scan = scan_result((-45, 130), (-25, 88), (0, 50), (25, 65), (45, 62))
     escape = choose_escape_turn(scan)
     assert escape is not None
-    assert escape["deg"] == -25.0
+    assert escape["deg"] == -10.0
     assert escape["bearing_deg"] == -45.0
 
 
@@ -51,7 +51,7 @@ def test_blocked_after_scan_rotates_toward_clearest_side():
     scan = scan_result((-45, 45), (-25, 62), (0, 55), (25, 110), (45, 95))
     intent = choose_body_intent(blocked_snapshot(), zone="office", last_intent="scan", last_scan=scan)
     assert intent["intent"] == "rotate_step"
-    assert intent["params"]["deg"] == 25.0
+    assert intent["params"]["deg"] == 10.0
     assert intent["params"]["reason"] == "clearest_scan"
 
 
@@ -59,7 +59,7 @@ def test_blocked_after_scan_rotates_toward_modestly_better_side():
     scan = scan_result((-45, 70.3), (-25, 61), (0, 54), (25, 58), (45, 62))
     intent = choose_body_intent(blocked_snapshot(distance=54), zone="office", last_intent="scan", last_scan=scan)
     assert intent["intent"] == "rotate_step"
-    assert intent["params"]["deg"] == -25.0
+    assert intent["params"]["deg"] == -10.0
     assert intent["params"]["distance_cm"] == 70.3
 
 
@@ -72,7 +72,7 @@ def test_narrow_path_after_scan_rotates_toward_clear_side():
     scan = scan_result((-35, 58), (-15, 72), (0, 82), (15, 96), (35, 145))
     intent = choose_body_intent(clear_snapshot(82), zone="office", last_intent="scan", last_scan=scan)
     assert intent["intent"] == "rotate_step"
-    assert intent["params"]["deg"] == 25.0
+    assert intent["params"]["deg"] == 10.0
     assert intent["params"]["reason"] == "clearest_scan_after_narrow_path"
 
 
@@ -86,7 +86,7 @@ def test_narrow_path_without_clear_side_holds_confused():
 def test_supervised_rotate_uses_floor_calibration():
     actions = intent_to_actions(BodyIntentCommand(intent="rotate_step", mood="focused", params={"deg": 25}))
     drive = next(action for action in actions if action["kind"] == "drive")
-    assert drive["command"] == {"linear": 0.0, "turn": 0.65, "duration_ms": 550}
+    assert drive["command"] == {"linear": 0.0, "turn": 0.45, "duration_ms": 300}
 
 
 def test_supervised_move_uses_floor_pulse_not_buzz_tick():

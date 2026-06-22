@@ -535,10 +535,10 @@ async def move_step(command: MoveStepCommand) -> dict:
 
 @app.post("/movement/rotate-step")
 async def rotate_step(command: RotateStepCommand) -> dict:
-    # Floor calibration from supervised testing: 0.65 turns clearly without
-    # forward lurch, while lower values only produced a tiny tick.
-    turn = 0.65 if command.deg >= 0 else -0.65
-    duration = int(min(900, max(260, abs(command.deg) * 22)))
+    # Manual rotate-step uses the same gentle calibration as supervised escape.
+    # Larger spins should be built from multiple rotate+scan cycles.
+    turn = 0.45 if command.deg >= 0 else -0.45
+    duration = int(min(320, max(120, abs(command.deg) * 12)))
     result = await guarded_drive(DriveCommand(linear=0, turn=turn, duration_ms=duration), require_permission=command.require_permission)
     result["step"] = command.model_dump()
     return result
