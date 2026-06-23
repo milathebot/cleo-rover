@@ -9,6 +9,7 @@ This is intended to print upright with supports off or minimal, in clear PETG on
 - Width: about 110-114 mm including small exterior details.
 - Height: 80 mm from bottom to top rim.
 - Open top and open front face for turret/camera/ultrasonic clearance.
+- Top side walls include M3 heat-set insert hardpoints for a future bolt-on roof.
 
 ## Design changes from failed v4/v5 attempts
 

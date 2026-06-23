@@ -32,6 +32,7 @@ HALF_W = WIDTH / 2.0
 HEIGHT = 80.0
 WALL_T = 2.8
 M3_CLEARANCE_D = 3.4
+INSERT_PILOT_D = 4.2
 INSERT_PILOTS = [4.1, 4.2, 4.3]
 
 
@@ -143,11 +144,28 @@ def side_wall(x0: float, x1: float, y_outer: float) -> list[Tri]:
     return lower_vent_band(x0 + 12, x1 - 12, y_outer) + smooth_upper_wall(x0, x1, y_outer)
 
 
+def roof_insert_hardpoints(x_positions: list[float]) -> list[Tri]:
+    """M3 heat-set insert pads on the top side walls for a future roof panel.
+
+    These are not chassis mounts. They are small inward shelves tied into the top
+    rim, with vertical 4.2 mm pilot holes for M3 x 4.6 x 5.7 inserts.
+    """
+    tris: list[Tri] = []
+    for x in x_positions:
+        for y in (-43.5, 43.5):
+            # Rectangular shelf ties the boss into the side wall and gives roof screws meat.
+            tris += box(x - 7.5, x + 7.5, y - 6.0, y + 6.0, HEIGHT - 8.0, HEIGHT)
+            # Round insert wall, vertical opening from the top down.
+            tris += annular_cylinder(x, y, HEIGHT - 8.0, HEIGHT, outer_d=10.8, inner_d=INSERT_PILOT_D)
+    return tris
+
+
 def front_half() -> list[Tri]:
     tris: list[Tri] = []
     x0, x1 = 0.0, L_HALF
     tris += side_wall(x0, x1, -HALF_W)
     tris += side_wall(x0, x1, HALF_W)
+    tris += roof_insert_hardpoints([22.0, 78.0])
     # front face open/U-shaped: corner cheeks only, center empty
     tris += box(x0, x0 + 4.0, -HALF_W, -41.0, 0, HEIGHT)
     tris += box(x0, x0 + 4.0, 41.0, HALF_W, 0, HEIGHT)
@@ -168,6 +186,7 @@ def rear_half() -> list[Tri]:
     x0, x1 = L_HALF, L_TOTAL
     tris += side_wall(x0, x1, -HALF_W)
     tris += side_wall(x0, x1, HALF_W)
+    tris += roof_insert_hardpoints([122.0, 178.0])
     # rear mostly closed but with a broad lower cable relief notch
     tris += box(x1 - 4.0, x1, -HALF_W, HALF_W, 32.0, HEIGHT)
     tris += box(x1 - 4.0, x1, -HALF_W, -38.0, 0, 32.0)
@@ -219,6 +238,7 @@ def readme_text(results: list[tuple[str, Vec]]) -> str:
         "- Width: about 110-114 mm including small exterior details.",
         "- Height: 80 mm from bottom to top rim.",
         "- Open top and open front face for turret/camera/ultrasonic clearance.",
+        "- Top side walls include M3 heat-set insert hardpoints for a future bolt-on roof.",
         "",
         "## Design changes from failed v4/v5 attempts",
         "",
