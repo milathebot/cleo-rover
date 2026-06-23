@@ -31,6 +31,7 @@ SAFE_COMMANDS: dict[str, list[str]] = {
     "movement-status": ["cleo-rover", "movement-status"],
     "preflight": ["cleo-rover", "preflight"],
     "presence-tick": ["cleo-rover", "presence-tick", "--cleanup"],
+    "pip-brain": ["cleo-rover", "pip-brain"],
     "pip-soul": ["cleo-rover", "pip-soul"],
     "situation": ["cleo-rover", "situation"],
     "snapshot": ["cleo-rover", "snapshot"],
@@ -203,6 +204,7 @@ def help_text() -> str:
         "  /rover floor-mode status\n"
         "  /rover floor-map-run --zone living-room --steps 1  (requires active floor-arm)\n"
         "  /rover pip status\n"
+        "  /rover pip-brain\n"
         "  /rover pip-soul\n"
         "  /rover pip wake | sleep | quiet | social | assistant\n"
         "  /rover pip greet | observe | patrol | stop\n"

@@ -266,6 +266,17 @@ def test_pip_identity_modes_greet_and_interrupts():
     assert state.json()["identity"]["name"] == "Pip"
     assert state.json()["identity"]["home_base"] == "office"
     assert state.json()["soul_version"]
+    assert "central_brain_digest" in state.json()["capabilities"]
+
+    brain = client.get("/pip/brain")
+    assert brain.status_code == 200
+    brain_data = brain.json()
+    assert brain_data["schema"] == "pip_brain_v1"
+    assert brain_data["where_am_i"]["zone"]
+    assert "what_happened" in brain_data
+    assert "what_is_around_me" in brain_data
+    assert "what_i_want" in brain_data
+    assert "next_safe_action" in brain_data
 
     soul = client.get("/pip/soul")
     assert soul.status_code == 200
@@ -311,6 +322,12 @@ def test_pip_life_tick_and_command_router(monkeypatch):
     assert status.status_code == 200
     assert status.json()["handled"] is True
     assert status.json()["action"] == "state"
+
+    brain = client.post("/pip/command", json={"text": "what are you doing", "source": "test"})
+    assert brain.status_code == 200
+    assert brain.json()["handled"] is True
+    assert brain.json()["action"] == "brain"
+    assert brain.json()["brain"]["schema"] == "pip_brain_v1"
 
     relay = client.post("/pip/command", json={"text": "what is the weather?", "source": "test"})
     assert relay.status_code == 200

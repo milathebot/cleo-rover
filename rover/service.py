@@ -17,6 +17,7 @@ from .hub import fetch_hub_snapshot
 from .mapping import map_summary, observation_items, scan_item, semantic_events_from_analysis
 from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
+from .pip_brain import build_pip_brain
 from .pip_soul import PIP_SOUL_VERSION, pip_soul_public
 from .supervisor import intent_to_actions, supervisor_snapshot, validate_intent
 from .persistence import RoverStore
@@ -815,9 +816,26 @@ def pip_public_state() -> dict:
             "vision_awareness",
             "first_adventure_readiness",
             "soul_identity_protocol",
+            "central_brain_digest",
             "telegram_or_voice_command_bridge",
         ],
     }
+
+
+def pip_brain_snapshot(*, compact: bool = True) -> dict:
+    sensors_now = body.sensors()
+    return build_pip_brain(
+        pip_state=pip_state,
+        identity=pip_identity,
+        battery=battery_safety_summary(sensors_now),
+        sensors=sensors_now,
+        status=status().model_dump(),
+        movement=movement_status(),
+        autonomy=autonomy.state,
+        recent_events=store.recent_events(40),
+        spatial_items=store.list_spatial(100),
+        compact=compact,
+    )
 
 
 def pip_can_autonomously_move(*, allow_movement: bool, battery: dict) -> tuple[bool, str]:
@@ -867,6 +885,11 @@ def pip_state_endpoint() -> dict:
 @app.get("/pip/soul")
 def pip_soul_endpoint() -> dict:
     return {"ok": True, **pip_soul_public()}
+
+
+@app.get("/pip/brain")
+def pip_brain_endpoint(compact: bool = True) -> dict:
+    return pip_brain_snapshot(compact=compact)
 
 
 @app.post("/pip/mode")
@@ -1009,6 +1032,8 @@ async def pip_command(command: PipCommand) -> dict:
     text = command.text.strip().lower()
     if text in {"status", "pip status", "where are you", "pip where are you"}:
         return {"ok": True, "handled": True, "action": "state", "state": pip_public_state()}
+    if text in {"brain", "pip brain", "what are you doing", "pip what are you doing", "what do you want", "pip what do you want"}:
+        return {"ok": True, "handled": True, "action": "brain", "brain": pip_brain_snapshot(compact=True)}
     if text in {"wake", "pip wake", "hi pip", "hello pip"}:
         return {"ok": True, "handled": True, "action": "wake", "result": await pip_wake()}
     if text in {"sleep", "pip sleep"}:
@@ -1030,7 +1055,8 @@ async def pip_command(command: PipCommand) -> dict:
     if text in {"stop", "pip stop"}:
         await body.stop()
         return {"ok": True, "handled": True, "action": "stop", "stopped": True}
-    hermes = ask_hermes_as_pip(command.text, context=pip_public_state())
+    hermes_context = {"state": pip_public_state(), "brain": pip_brain_snapshot(compact=True)}
+    hermes = ask_hermes_as_pip(command.text, context=hermes_context)
     if hermes.get("ok"):
         answer = str(hermes.get("answer") or "").strip()
         pip_state["mood"] = "happy" if any(word in answer.lower() for word in ["hi", "ready", "good", "happy"]) else "curious"
@@ -1044,7 +1070,7 @@ async def pip_command(command: PipCommand) -> dict:
         "handled": False,
         "action": "relay_to_hermes",
         "prompt": command.text,
-        "context": pip_public_state(),
+        "context": hermes_context,
         "bridge": hermes,
         "note": "Set HERMES_API_BASE/HERMES_API_KEY on cleo-rover-body to let Pip ask Hermes automatically, then speak the answer.",
     }
