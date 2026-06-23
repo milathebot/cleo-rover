@@ -179,12 +179,11 @@ def front_half() -> list[Tri]:
     # front face open/U-shaped: corner cheeks only, center empty
     tris += box(x0, x0 + 4.0, -HALF_W, -41.0, 0, HEIGHT)
     tris += box(x0, x0 + 4.0, 41.0, HALF_W, 0, HEIGHT)
-    # low front bumper/rim, not blocking sensors
-    tris += box(x0, x0 + 4.0, -HALF_W, HALF_W, 0, 10.0)
+    # No full-width lower front rail: keep the center open for turret/camera/wiring.
     # seam face at rear of front half
     tris += box(x1 - 4.0, x1, -HALF_W, -43.0, 0, HEIGHT)
     tris += box(x1 - 4.0, x1, 43.0, HALF_W, 0, HEIGHT)
-    tris += box(x1 - 4.0, x1, -HALF_W, HALF_W, 0, 9.0)
+    # No full-width lower seam rail: halves remain U-shaped around the center electronics.
     # inside velcro landings, low and flat
     tris += box(x0 + 18, x1 - 12, -48.0, -44.0, 8.0, 13.0)
     tris += box(x0 + 18, x1 - 12, 44.0, 48.0, 8.0, 13.0)
@@ -201,11 +200,11 @@ def rear_half() -> list[Tri]:
     tris += box(x1 - 4.0, x1, -HALF_W, HALF_W, 32.0, HEIGHT)
     tris += box(x1 - 4.0, x1, -HALF_W, -38.0, 0, 32.0)
     tris += box(x1 - 4.0, x1, 38.0, HALF_W, 0, 32.0)
-    tris += box(x1 - 4.0, x1, -HALF_W, HALF_W, 0, 8.0)
+    # No full-width lower rear rail; leave middle/bottom open for Pi/cable clearance.
     # seam face at front of rear half
     tris += box(x0, x0 + 4.0, -HALF_W, -43.0, 0, HEIGHT)
     tris += box(x0, x0 + 4.0, 43.0, HALF_W, 0, HEIGHT)
-    tris += box(x0, x0 + 4.0, -HALF_W, HALF_W, 0, 9.0)
+    # No full-width lower seam rail: keep a true U shape.
     # small rear lower light/vent detail only
     for y in [-28, -20, -12, 12, 20, 28]:
         tris += box(x1 - 5.8, x1 - 4.2, y - 0.7, y + 0.7, 12.0, 28.0)
@@ -248,6 +247,7 @@ def readme_text(results: list[tuple[str, Vec]]) -> str:
         "- Width: about 110-114 mm including small exterior details.",
         "- Height: 80 mm from bottom to top rim.",
         "- Open top and open front face for turret/camera/ultrasonic clearance.",
+        "- True U-shaped halves: no full-width lower rails across the center electronics/servo/Pi zone.",
         "- Top side walls include M3 heat-set insert hardpoints for a future bolt-on roof.",
         "",
         "## Design changes from failed v4/v5 attempts",
