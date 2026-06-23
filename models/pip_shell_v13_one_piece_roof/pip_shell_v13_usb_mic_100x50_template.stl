@@ -1,0 +1,86 @@
+solid pip_shell_v13_usb_mic_100x50_template
+  facet normal 0 0 -1
+    outer loop
+      vertex -50 -25 0
+      vertex 50 25 0
+      vertex 50 -25 0
+    endloop
+  endfacet
+  facet normal 0 0 -1
+    outer loop
+      vertex -50 -25 0
+      vertex -50 25 0
+      vertex 50 25 0
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex -50 -25 1.2
+      vertex 50 -25 1.2
+      vertex 50 25 1.2
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex -50 -25 1.2
+      vertex 50 25 1.2
+      vertex -50 25 1.2
+    endloop
+  endfacet
+  facet normal -1 0 0
+    outer loop
+      vertex -50 -25 0
+      vertex -50 -25 1.2
+      vertex -50 25 1.2
+    endloop
+  endfacet
+  facet normal -1 0 0
+    outer loop
+      vertex -50 -25 0
+      vertex -50 25 1.2
+      vertex -50 25 0
+    endloop
+  endfacet
+  facet normal 1 0 0
+    outer loop
+      vertex 50 -25 0
+      vertex 50 25 0
+      vertex 50 25 1.2
+    endloop
+  endfacet
+  facet normal 1 0 0
+    outer loop
+      vertex 50 -25 0
+      vertex 50 25 1.2
+      vertex 50 -25 1.2
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex -50 -25 0
+      vertex 50 -25 0
+      vertex 50 -25 1.2
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex -50 -25 0
+      vertex 50 -25 1.2
+      vertex -50 -25 1.2
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex -50 25 0
+      vertex -50 25 1.2
+      vertex 50 25 1.2
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex -50 25 0
+      vertex 50 25 1.2
+      vertex 50 25 0
+    endloop
+  endfacet
+endsolid pip_shell_v13_usb_mic_100x50_template
