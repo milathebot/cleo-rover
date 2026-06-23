@@ -143,13 +143,14 @@ class ReactiveExploreCommand(BaseModel):
     zone: str = Field(default="office", max_length=80)
     allow_movement: bool = False
     duration_seconds: int = Field(default=45, ge=1, le=300)
-    max_cycles: int = Field(default=12, ge=1, le=60)
-    crawl_linear: float = Field(default=0.26, ge=0.0, le=0.5)
+    max_cycles: int = Field(default=20, ge=1, le=80)
+    crawl_linear: float = Field(default=0.22, ge=0.0, le=0.5)
     front_clear_cm: float = Field(default=120.0, ge=30.0, le=300.0)
     front_stop_cm: float = Field(default=45.0, ge=15.0, le=150.0)
     front_emergency_cm: float = Field(default=25.0, ge=5.0, le=80.0)
     reverse_on_blocked: bool = True
-    scan_angles: list[float] = Field(default_factory=lambda: [-45, 0, 45], max_length=9)
+    scan_angles: list[float] = Field(default_factory=lambda: [-70, -45, -20, 0, 20, 45, 70], max_length=9)
+    keep_searching_when_stuck: bool = True
     compact: bool = True
     notes: str | None = Field(default=None, max_length=240)
 

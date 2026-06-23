@@ -667,14 +667,32 @@ def scan_observation_summary(scan: dict) -> dict:
 
 
 async def reactive_escape_scan(zone: str, angles: list[float]) -> tuple[dict, dict]:
-    scan = await map_scan(MapScanCommand(zone=zone, angles=angles, settle_ms=180, snapshot_center=False))
+    scan = await map_scan(MapScanCommand(zone=zone, angles=angles, settle_ms=160, snapshot_center=False))
     return scan, scan_observation_summary(scan)
 
 
-async def reactive_turn_toward(best: dict | None) -> dict:
+def reactive_turn_degrees(best: dict | None, *, blocked_streak: int = 0) -> float:
+    """Pick a small open-loop turn toward the best scan bearing.
+
+    Freenove's ordinary-wheel demo uses direct tank turns. Pip uses the same
+    channel logic, but in smaller increments so she can scan/rotate/scan instead
+    of giving up when the first escape angle is poor.
+    """
     if not best:
-        return await guarded_drive(DriveCommand(linear=0, turn=0.45, duration_ms=120), require_permission=True)
-    deg = 10 if float(best.get("bearing_deg", 0)) >= 0 else -10
+        return 12.0 if blocked_streak % 2 == 0 else -12.0
+    bearing = float(best.get("bearing_deg", 0) or 0)
+    if abs(bearing) < 8:
+        return 0.0
+    magnitude = min(24.0, max(8.0, abs(bearing) * 0.42))
+    if blocked_streak >= 3:
+        magnitude = min(32.0, magnitude + 6.0)
+    return magnitude if bearing >= 0 else -magnitude
+
+
+async def reactive_turn_toward(best: dict | None, *, blocked_streak: int = 0) -> dict:
+    deg = reactive_turn_degrees(best, blocked_streak=blocked_streak)
+    if abs(deg) < 1.0:
+        return {"ok": True, "skipped": True, "reason": "best bearing already centered", "deg": deg}
     return await rotate_step(RotateStepCommand(deg=deg, require_permission=True))
 
 
@@ -721,7 +739,7 @@ def plan_summary(plan: list[dict]) -> dict:
         counts[kind] = counts.get(kind, 0) + 1
         if item.get("front_distance_cm") is not None:
             front_values.append(float(item["front_distance_cm"]))
-        if item.get("kind") in {"crawl", "turn", "reverse", "stop", "hold", "corner-trap", "reflex-stop"}:
+        if item.get("kind") in {"crawl", "turn", "reverse", "stop", "hold", "corner-search", "corner-trap", "reflex-stop"}:
             last_action = compact_action(item)
         summary = item.get("summary") or {}
         best = summary.get("best")
@@ -734,6 +752,7 @@ def plan_summary(plan: list[dict]) -> dict:
         "best_scan": best_scan,
         "last_action": last_action,
         "corner_trap": counts.get("corner-trap", 0) > 0,
+        "corner_search": counts.get("corner-search", 0) > 0,
         "reflex_stop": counts.get("reflex-stop", 0) > 0,
     }
 
@@ -1101,7 +1120,7 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
         if distance_value is None:
             scan, summary = await reactive_escape_scan(command.zone, command.scan_angles)
             plan.append({"kind": "scan", "reason": "front range unknown", "summary": summary})
-            turn = await reactive_turn_toward(summary.get("best"))
+            turn = await reactive_turn_toward(summary.get("best"), blocked_streak=blocked_streak)
             plan.append({"kind": "turn", "reason": "range unknown", "result": turn})
             await asyncio.sleep(0.08)
             continue
@@ -1116,7 +1135,7 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
                 await asyncio.sleep(0.25)
             scan, summary = await reactive_escape_scan(command.zone, command.scan_angles)
             plan.append({"kind": "scan", "reason": "emergency escape", "summary": summary, "result": scan})
-            turn = await reactive_turn_toward(summary.get("best"))
+            turn = await reactive_turn_toward(summary.get("best"), blocked_streak=blocked_streak)
             plan.append({"kind": "turn", "reason": "emergency escape", "result": turn})
             await asyncio.sleep(0.15)
             continue
@@ -1129,13 +1148,16 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
             best = summary.get("best")
             best_distance = float(best["distance_cm"]) if best else 0.0
             if blocked_streak >= 4 and best_distance < command.front_clear_cm:
-                plan.append({"kind": "corner-trap", "reason": f"blocked for {blocked_streak} cycles; best side only {best_distance:.1f}cm", "summary": summary})
-                break
-            if blocked_streak >= 2 and command.reverse_on_blocked:
+                plan.append({"kind": "corner-search", "reason": f"blocked for {blocked_streak} cycles; best side only {best_distance:.1f}cm; continuing scan/rotate search", "summary": summary})
+                if command.reverse_on_blocked and blocked_streak % 3 == 1:
+                    reverse = await guarded_drive(DriveCommand(linear=-0.20, turn=0, duration_ms=160), require_permission=True)
+                    plan.append({"kind": "reverse", "reason": "make room for continued corner search", "result": reverse})
+                    await asyncio.sleep(0.18)
+            if blocked_streak >= 2 and command.reverse_on_blocked and not (blocked_streak >= 4 and blocked_streak % 3 == 1):
                 reverse = await guarded_drive(DriveCommand(linear=-0.24, turn=0, duration_ms=180), require_permission=True)
                 plan.append({"kind": "reverse", "reason": "blocked streak", "result": reverse})
                 await asyncio.sleep(0.2)
-            turn = await reactive_turn_toward(summary.get("best"))
+            turn = await reactive_turn_toward(summary.get("best"), blocked_streak=blocked_streak)
             plan.append({"kind": "turn", "reason": "front blocked", "result": turn})
             await asyncio.sleep(0.12)
             continue
@@ -1147,7 +1169,7 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
             best = summary.get("best")
             center = summary.get("center")
             if best and (center is None or float(best["distance_cm"]) > float(center["distance_cm"]) + 20):
-                turn = await reactive_turn_toward(best)
+                turn = await reactive_turn_toward(best, blocked_streak=blocked_streak)
                 plan.append({"kind": "turn", "reason": "better side clearance", "result": turn})
             else:
                 plan.append({"kind": "hold", "reason": "no side sufficiently better"})
@@ -1170,7 +1192,7 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
         "summary": summary,
         "battery": battery_safety_summary(sensors_after),
         "event": event.model_dump(),
-        "safety": "Pi-side sense/decide/act loop with persistent forward watchdog and no forward crawl below front_clear_cm.",
+        "safety": "Pi-side sense/decide/act loop with ramped wheel PWM, persistent forward watchdog, no forward crawl below front_clear_cm, and continued scan/rotate search when blocked.",
     }
     response["plan"] = compact_plan(plan) if command.compact else plan
     return response
@@ -1248,7 +1270,7 @@ async def little_being_loop(command: LittleBeingLoopCommand) -> dict:
             front_stop_cm=55.0,
             front_emergency_cm=30.0,
             reverse_on_blocked=True,
-            scan_angles=[-45, 0, 45],
+            scan_angles=[-70, -45, -20, 0, 20, 45, 70],
             compact=True,
             notes="little being local reactive explore",
         )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -158,18 +159,44 @@ class FreenoveHardware:
             self.pwm.set_motor_pwm(reverse_channel, PCA9685_MAX_DUTY)
             self.pwm.set_motor_pwm(forward_channel, PCA9685_MAX_DUTY)
 
-    def drive(self, command: DriveCommand) -> WheelDuty:
-        duty = drive_to_wheel_duty(command, self.config.motors.max_duty_cycle)
+    def _apply_wheel_duty(self, duty: WheelDuty) -> None:
         for wheel, value in duty.as_dict().items():
             self._set_wheel(wheel, value)
         self.last_wheel_duty = duty
-        return duty
+
+    def _ramp_to(self, target: WheelDuty, *, ramp_ms: int = 90, steps: int = 5) -> WheelDuty:
+        """Blend wheel PWM toward target instead of snapping.
+
+        Freenove's reference code sends target PWM immediately, which is fine
+        for manual RC control but makes Pip's short autonomous movements feel
+        jerky. A tiny open-loop ramp keeps the verified channel map and reduces
+        lurch without adding closed-loop wheel odometry.
+        """
+        start = self.last_wheel_duty
+        steps = max(1, int(steps))
+        delay = max(0.0, ramp_ms / 1000.0 / steps)
+        for idx in range(1, steps + 1):
+            t = idx / steps
+            duty = WheelDuty(
+                left_upper=int(start.left_upper + (target.left_upper - start.left_upper) * t),
+                left_lower=int(start.left_lower + (target.left_lower - start.left_lower) * t),
+                right_upper=int(start.right_upper + (target.right_upper - start.right_upper) * t),
+                right_lower=int(start.right_lower + (target.right_lower - start.right_lower) * t),
+            )
+            self._apply_wheel_duty(duty)
+            if delay:
+                time.sleep(delay)
+        return target
+
+    def drive(self, command: DriveCommand) -> WheelDuty:
+        duty = drive_to_wheel_duty(command, self.config.motors.max_duty_cycle)
+        return self._ramp_to(duty, ramp_ms=90, steps=5)
 
     def stop(self) -> None:
-        duty = WheelDuty(0, 0, 0, 0)
-        for wheel in duty.as_dict():
+        zero = self._ramp_to(WheelDuty(0, 0, 0, 0), ramp_ms=70, steps=4)
+        for wheel in zero.as_dict():
             self._set_wheel(wheel, 0)
-        self.last_wheel_duty = duty
+        self.last_wheel_duty = zero
 
     def set_turret(self, command: TurretCommand) -> None:
         # Map -80..80 user pan to a conservative servo angle around center.

@@ -1,6 +1,6 @@
 from rover.config import RoverConfig
 from rover.drivers import should_reflex_stop
-from rover.freenove import FREENOVE_DEFAULT_SERVO_CHANNELS, FREENOVE_WHEEL_CHANNELS, drive_to_wheel_duty, freenove_hardware_map
+from rover.freenove import FREENOVE_DEFAULT_SERVO_CHANNELS, FREENOVE_WHEEL_CHANNELS, FreenoveHardware, WheelDuty, drive_to_wheel_duty, freenove_hardware_map
 from rover.models import DriveCommand
 
 
@@ -47,3 +47,22 @@ def test_reflex_stop_only_applies_to_forward_close_obstacles():
     assert should_reflex_stop(forward, {"front_distance_cm": 20.5}, threshold_cm=20.0) == (False, None)
     assert should_reflex_stop(reverse, {"front_distance_cm": 10.0}, threshold_cm=20.0) == (False, None)
     assert should_reflex_stop(forward, {"front_distance_cm": None}, threshold_cm=20.0) == (False, None)
+
+
+def test_freenove_ramp_blends_from_last_duty(monkeypatch):
+    applied = []
+    hardware = FreenoveHardware.__new__(FreenoveHardware)
+    hardware.last_wheel_duty = WheelDuty(0, 0, 0, 0)
+
+    def fake_apply(duty):
+        applied.append(duty)
+        hardware.last_wheel_duty = duty
+
+    monkeypatch.setattr("rover.freenove.time.sleep", lambda _seconds: None)
+    hardware._apply_wheel_duty = fake_apply
+    target = WheelDuty(100, 100, -100, -100)
+    result = hardware._ramp_to(target, ramp_ms=50, steps=4)
+
+    assert result == target
+    assert applied[0] == WheelDuty(25, 25, -25, -25)
+    assert applied[-1] == target
