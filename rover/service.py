@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from typing import Any
 
@@ -1027,6 +1028,45 @@ def pip_hermes_bridge_status() -> dict:
     }
 
 
+def parse_destination_wish(text: str) -> str | None:
+    patterns = [
+        r"(?:i want to|i wanna|can we|lets|let's|please)\s+(?:go|get|head|explore)\s+(?:to\s+)?(?P<dest>[a-z0-9 _-]{3,60})",
+        r"(?:go|get|head|explore)\s+(?:to\s+)?(?P<dest>the\s+[a-z0-9 _-]{3,60}|[a-z0-9 _-]{3,60})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text.lower())
+        if match:
+            dest = re.sub(r"\s+", " ", match.group("dest")).strip(" .?!")
+            if dest and dest not in {"status", "sleep", "wake", "quiet", "social", "assistant"}:
+                return dest[:60]
+    return None
+
+
+def destination_requires_help(destination: str) -> bool:
+    outdoor_words = {"yard", "backyard", "back yard", "outside", "outdoors", "garden", "garage", "driveway", "porch", "deck"}
+    room_transition_words = {"hall", "hallway", "kitchen", "bedroom", "living room", "bathroom", "door"}
+    return any(word in destination for word in outdoor_words | room_transition_words)
+
+
+def pip_set_exploration_goal(destination: str, *, source: str) -> dict:
+    requires_help = destination_requires_help(destination)
+    goal = {
+        "destination": destination,
+        "source": source,
+        "created_at": time.time(),
+        "status": "waiting_for_human_help" if requires_help else "waiting_for_preflight",
+        "requires_human_help": requires_help,
+        "help_needed": "open/clear doorway and supervise transition" if requires_help else "preflight and movement permission",
+        "safety_note": "Pip may want destinations, but cannot self-authorize movement or doors.",
+    }
+    pip_state["exploration_goal"] = goal
+    pip_state["mood"] = "seeking"
+    pip_state["boredom"] = min(1.0, max(0.65, float(pip_state.get("boredom", 0) or 0)))
+    save_pip_runtime()
+    remember_event(RoverEvent(kind=RoverEventKind.manual_control, source="pip_goal", label=f"goal:{destination}", payload=goal))
+    return goal
+
+
 @app.post("/pip/command")
 async def pip_command(command: PipCommand) -> dict:
     text = command.text.strip().lower()
@@ -1034,6 +1074,12 @@ async def pip_command(command: PipCommand) -> dict:
         return {"ok": True, "handled": True, "action": "state", "state": pip_public_state()}
     if text in {"brain", "pip brain", "what are you doing", "pip what are you doing", "what do you want", "pip what do you want"}:
         return {"ok": True, "handled": True, "action": "brain", "brain": pip_brain_snapshot(compact=True)}
+    destination = parse_destination_wish(text)
+    if destination:
+        goal = pip_set_exploration_goal(destination, source=command.source)
+        line = f"I want to go to {destination}. " + ("I need you to open/clear the way and supervise me before I try." if goal["requires_human_help"] else "I can plan it after preflight and movement permission.")
+        await pip_set_expression(ExpressionMode.seeking, "go?", 0.55)
+        return {"ok": True, "handled": True, "action": "destination_goal", "line": line, "goal": goal, "brain": pip_brain_snapshot(compact=True)}
     if text in {"wake", "pip wake", "hi pip", "hello pip"}:
         return {"ok": True, "handled": True, "action": "wake", "result": await pip_wake()}
     if text in {"sleep", "pip sleep"}:

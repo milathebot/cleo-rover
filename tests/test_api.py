@@ -329,6 +329,14 @@ def test_pip_life_tick_and_command_router(monkeypatch):
     assert brain.json()["action"] == "brain"
     assert brain.json()["brain"]["schema"] == "pip_brain_v1"
 
+    goal = client.post("/pip/command", json={"text": "I want to go to the back yard", "source": "test"})
+    assert goal.status_code == 200
+    assert goal.json()["handled"] is True
+    assert goal.json()["action"] == "destination_goal"
+    assert goal.json()["goal"]["destination"] == "the back yard"
+    assert goal.json()["goal"]["requires_human_help"] is True
+    assert goal.json()["brain"]["what_i_want"]["goal"]["destination"] == "the back yard"
+
     relay = client.post("/pip/command", json={"text": "what is the weather?", "source": "test"})
     assert relay.status_code == 200
     assert relay.json()["handled"] is False

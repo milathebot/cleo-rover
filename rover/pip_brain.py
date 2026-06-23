@@ -125,23 +125,34 @@ def _desire_and_next_step(
 ) -> dict[str, Any]:
     mode = str(pip_state.get("mode") or "social")
     boredom = float(pip_state.get("boredom") or 0.0)
+    goal = pip_state.get("exploration_goal") if isinstance(pip_state.get("exploration_goal"), dict) else None
     if mode == "sleep":
-        return {"want": "rest", "doing_now": "sleeping", "next_safe_action": "stay still until wake command"}
+        return {"want": "rest", "doing_now": "sleeping", "next_safe_action": "stay still until wake command", "goal": goal}
     if battery.get("recommendation") == "charge_before_movement":
-        return {"want": "charge", "doing_now": "protecting battery", "next_safe_action": "ask Noot to park/charge Pip"}
+        return {"want": "charge", "doing_now": "protecting battery", "next_safe_action": "ask Noot to park/charge Pip", "goal": goal}
     if hazards:
-        return {"want": "safety", "doing_now": "watching hazards", "next_safe_action": "stop, observe, scan, or ask for rescue before moving"}
+        return {"want": "safety", "doing_now": "watching hazards", "next_safe_action": "stop, observe, scan, or ask for rescue before moving", "goal": goal}
+    if goal:
+        destination = str(goal.get("destination") or "somewhere")
+        if goal.get("requires_human_help"):
+            return {
+                "want": f"go_to:{destination}",
+                "doing_now": "holding a destination wish",
+                "next_safe_action": f"ask Noot for help with access/supervision before trying to go to {destination}",
+                "goal": goal,
+            }
+        return {"want": f"go_to:{destination}", "doing_now": "planning a tiny route", "next_safe_action": "run vision-awareness, then first-adventure only if preflight and movement permission are green", "goal": goal}
     if movement.get("active"):
-        return {"want": "complete tiny supervised movement", "doing_now": "following active movement grant", "next_safe_action": "continue Pi-side reactive loop and stop when grant expires"}
+        return {"want": "complete tiny supervised movement", "doing_now": "following active movement grant", "next_safe_action": "continue Pi-side reactive loop and stop when grant expires", "goal": goal}
     if range_state.get("state") in {"blocked", "near"}:
-        return {"want": "find open path", "doing_now": "front path is constrained", "next_safe_action": "scan left/right, rotate in tiny steps, do not crawl forward"}
+        return {"want": "find open path", "doing_now": "front path is constrained", "next_safe_action": "scan left/right, rotate in tiny steps, do not crawl forward", "goal": goal}
     if mode == "quiet":
-        return {"want": "observe quietly", "doing_now": "quiet presence", "next_safe_action": "vision-awareness or look-around without movement"}
+        return {"want": "observe quietly", "doing_now": "quiet presence", "next_safe_action": "vision-awareness or look-around without movement", "goal": goal}
     if not status.get("motors_armed"):
-        return {"want": "be ready", "doing_now": "bench/presence mode", "next_safe_action": "observe, speak, and wait for first-adventure/floor-cautious prep"}
+        return {"want": "be ready", "doing_now": "bench/presence mode", "next_safe_action": "observe, speak, and wait for first-adventure/floor-cautious prep", "goal": goal}
     if boredom >= 0.60 or autonomy.curiosity >= 0.68:
-        return {"want": "explore", "doing_now": "curious and ready", "next_safe_action": "run first-adventure or life-tick with explicit supervised movement permission"}
-    return {"want": "watch and learn", "doing_now": "calm office presence", "next_safe_action": "periodic vision-awareness and map memory updates"}
+        return {"want": "explore", "doing_now": "curious and ready", "next_safe_action": "run first-adventure or life-tick with explicit supervised movement permission", "goal": goal}
+    return {"want": "watch and learn", "doing_now": "calm office presence", "next_safe_action": "periodic vision-awareness and map memory updates", "goal": goal}
 
 
 def build_pip_brain(
