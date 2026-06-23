@@ -17,6 +17,7 @@ from .hub import fetch_hub_snapshot
 from .mapping import map_summary, observation_items, scan_item, semantic_events_from_analysis
 from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
+from .pip_soul import PIP_SOUL_VERSION, pip_soul_public
 from .supervisor import intent_to_actions, supervisor_snapshot, validate_intent
 from .persistence import RoverStore
 from .renderer import render_expression
@@ -794,6 +795,7 @@ def pip_public_state() -> dict:
     return {
         "ok": True,
         "identity": pip_identity,
+        "soul_version": PIP_SOUL_VERSION,
         "state": pip_state,
         "battery": battery,
         "movement": movement_status(),
@@ -811,6 +813,8 @@ def pip_public_state() -> dict:
             "bored_patrol",
             "reactive_explore",
             "vision_awareness",
+            "first_adventure_readiness",
+            "soul_identity_protocol",
             "telegram_or_voice_command_bridge",
         ],
     }
@@ -858,6 +862,11 @@ def pip_should_patrol(*, force: bool = False) -> tuple[bool, str]:
 @app.get("/pip/state")
 def pip_state_endpoint() -> dict:
     return pip_public_state()
+
+
+@app.get("/pip/soul")
+def pip_soul_endpoint() -> dict:
+    return {"ok": True, **pip_soul_public()}
 
 
 @app.post("/pip/mode")

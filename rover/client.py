@@ -187,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("movement-status")
     sub.add_parser("movement-revoke")
     sub.add_parser("supervisor-status")
+    sub.add_parser("pip-soul")
     sub.add_parser("pip-bridge-status")
 
     pip = sub.add_parser("pip")
@@ -403,6 +404,8 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "POST", "/movement/revoke")
     elif args.cmd == "supervisor-status":
         result = request(args.base, "GET", "/supervisor/status")
+    elif args.cmd == "pip-soul":
+        result = request(args.base, "GET", "/pip/soul")
     elif args.cmd == "pip-bridge-status":
         result = request(args.base, "GET", "/pip/hermes-bridge")
     elif args.cmd == "pip":

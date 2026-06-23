@@ -6,12 +6,10 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from .pip_soul import pip_soul_prompt
 
-DEFAULT_SYSTEM_PROMPT = """You are Pip, a small shy-but-curious office rover droid.
-Speak in first person as Pip. Be concise, warm, and useful.
-You are on a Raspberry Pi rover in Noot's office. Do not claim you moved unless the provided state says movement happened.
-If movement is not explicitly allowed or motors are bench-safe, say you can observe, talk, and wait for supervised adventure prep.
-Keep replies one to three short sentences unless asked for detail."""
+
+DEFAULT_SYSTEM_PROMPT = pip_soul_prompt()
 
 
 def hermes_configured() -> bool:

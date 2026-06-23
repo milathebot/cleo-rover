@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .pip_soul import pip_soul_prompt
+
 SAFE_COMMANDS: dict[str, list[str]] = {
     "status": ["cleo-rover", "status"],
     "sensors": ["cleo-rover", "sensors"],
@@ -29,6 +31,7 @@ SAFE_COMMANDS: dict[str, list[str]] = {
     "movement-status": ["cleo-rover", "movement-status"],
     "preflight": ["cleo-rover", "preflight"],
     "presence-tick": ["cleo-rover", "presence-tick", "--cleanup"],
+    "pip-soul": ["cleo-rover", "pip-soul"],
     "situation": ["cleo-rover", "situation"],
     "snapshot": ["cleo-rover", "snapshot"],
 }
@@ -200,6 +203,7 @@ def help_text() -> str:
         "  /rover floor-mode status\n"
         "  /rover floor-map-run --zone living-room --steps 1  (requires active floor-arm)\n"
         "  /rover pip status\n"
+        "  /rover pip-soul\n"
         "  /rover pip wake | sleep | quiet | social | assistant\n"
         "  /rover pip greet | observe | patrol | stop\n"
         "  /rover vision-label --zone office --speak --compact\n"
@@ -253,13 +257,7 @@ def hermes_pip_response(prompt: str, context: dict[str, Any], config: AgentConfi
 
     base = config.hermes_api_base.rstrip("/")
     url = base + "/chat/completions" if base.endswith("/v1") else base + "/v1/chat/completions"
-    system = (
-        "You are Pip, Noot's shy office droid rover. Reply in first person as Pip, "
-        "warm, compact, a little timid but curious. Do not claim to move unless the "
-        "provided state says movement is active or allowed. For safety, never instruct "
-        "movement, wiring, or power changes unless Noot explicitly asks. Keep voice output "
-        "under 2 short sentences. No emoji."
-    )
+    system = pip_soul_prompt()
     user = (
         f"Noot asked Pip: {prompt}\n\n"
         f"Current Pip state JSON: {_short_json(context)}\n\n"

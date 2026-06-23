@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from rover.models import ExpressionCommand, ExpressionMode
+from rover.pip_soul import pip_soul_prompt
 from rover.renderer import render_expression
 from rover.service import app
 
@@ -264,6 +265,13 @@ def test_pip_identity_modes_greet_and_interrupts():
     assert state.status_code == 200
     assert state.json()["identity"]["name"] == "Pip"
     assert state.json()["identity"]["home_base"] == "office"
+    assert state.json()["soul_version"]
+
+    soul = client.get("/pip/soul")
+    assert soul.status_code == 200
+    assert soul.json()["identity"]["name"] == "Pip"
+    assert "never claim" in soul.json()["system_prompt"].lower()
+    assert "first person as Pip" in pip_soul_prompt()
 
     quiet = client.post("/pip/mode", json={"mode": "quiet", "reason": "test"})
     assert quiet.status_code == 200
