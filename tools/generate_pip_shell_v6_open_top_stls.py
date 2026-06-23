@@ -145,18 +145,28 @@ def side_wall(x0: float, x1: float, y_outer: float) -> list[Tri]:
 
 
 def roof_insert_hardpoints(x_positions: list[float]) -> list[Tri]:
-    """M3 heat-set insert pads on the top side walls for a future roof panel.
+    """M3 heat-set insert bosses on the top side walls for a future roof panel.
 
-    These are not chassis mounts. They are small inward shelves tied into the top
-    rim, with vertical 4.2 mm pilot holes for M3 x 4.6 x 5.7 inserts.
+    Important: do not put a solid shelf under the pilot hole. The first roof
+    hardpoint revision used a rectangular pad plus an annular boss, which made
+    slicers display the insert holes as filled circular marks. These bosses are
+    true annular cylinders tied into the side wall by small outside ribs that do
+    not cover the 4.2 mm center pilot.
     """
     tris: list[Tri] = []
     for x in x_positions:
-        for y in (-43.5, 43.5):
-            # Rectangular shelf ties the boss into the side wall and gives roof screws meat.
-            tris += box(x - 7.5, x + 7.5, y - 6.0, y + 6.0, HEIGHT - 8.0, HEIGHT)
-            # Round insert wall, vertical opening from the top down.
-            tris += annular_cylinder(x, y, HEIGHT - 8.0, HEIGHT, outer_d=10.8, inner_d=INSERT_PILOT_D)
+        for y in (-47.5, 47.5):
+            # True vertical pilot hole for the M3 x 4.6 x 5.7 insert.
+            tris += annular_cylinder(x, y, HEIGHT - 8.0, HEIGHT, outer_d=13.0, inner_d=INSERT_PILOT_D)
+            # Tie ribs connect the boss to the outer wall/rim without crossing the hole.
+            if y < 0:
+                tris += box(x - 7.0, x + 7.0, -55.0, -53.0, HEIGHT - 8.0, HEIGHT)
+                tris += box(x - 7.0, x - 4.0, -53.0, -47.5, HEIGHT - 8.0, HEIGHT)
+                tris += box(x + 4.0, x + 7.0, -53.0, -47.5, HEIGHT - 8.0, HEIGHT)
+            else:
+                tris += box(x - 7.0, x + 7.0, 53.0, 55.0, HEIGHT - 8.0, HEIGHT)
+                tris += box(x - 7.0, x - 4.0, 47.5, 53.0, HEIGHT - 8.0, HEIGHT)
+                tris += box(x + 4.0, x + 7.0, 47.5, 53.0, HEIGHT - 8.0, HEIGHT)
     return tris
 
 
