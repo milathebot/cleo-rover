@@ -176,12 +176,33 @@ def rear_u_cowl() -> list[Tri]:
 
 
 def seam_clip_pair() -> list[Tri]:
+    """Two screw-on seam bridge plates for joining front rails to the rear U-cowl.
+
+    Coordinates intentionally match the assembled shell coordinate system:
+    - front rail rear insert centers: x=78, y=±41.5
+    - rear cowl front insert centers: x=122, y=±41.5
+
+    The plates bridge across the x=100 seam. Holes are true 3.6 mm M3
+    clearance holes, not filled circles. They screw down into heat-set inserts
+    installed in the rail/cowl boss pilots.
+    """
     tris: list[Tri] = []
-    # Simple flat clips for optional top seam use; print flat.
+    hole_r_clear = 3.6 / 2.0
+    boss_clearance = 5.0
+    plate_x0, plate_x1 = 66.0, 134.0
+    plate_t = 3.2
     for y in (-41.5, 41.5):
-        tris += box(-12, 12, y-5, y+5, 0, 3.2)
-        for cx in (-8, 8):
-            tris += annular_cylinder(cx, y, 0, 3.2, outer_d=8.5, inner_d=3.6)
+        y0, y1 = y - 7.0, y + 7.0
+        # Horizontal strips above/below the screw holes.
+        tris += box(plate_x0, plate_x1, y0, y - boss_clearance, 0, plate_t)
+        tris += box(plate_x0, plate_x1, y + boss_clearance, y1, 0, plate_t)
+        # Center band split around both holes so no face caps the screw path.
+        tris += box(plate_x0, 78.0 - boss_clearance, y - boss_clearance, y + boss_clearance, 0, plate_t)
+        tris += box(78.0 + boss_clearance, 122.0 - boss_clearance, y - boss_clearance, y + boss_clearance, 0, plate_t)
+        tris += box(122.0 + boss_clearance, plate_x1, y - boss_clearance, y + boss_clearance, 0, plate_t)
+        # Washer collars around true through holes.
+        for cx in (78.0, 122.0):
+            tris += annular_cylinder(cx, y, 0, plate_t, outer_d=12.0, inner_d=3.6)
     return tris
 
 
@@ -215,7 +236,8 @@ def readme_text(results: list[tuple[str, Vec]]) -> str:
         "- Front left rail + front right rail cover the front sides only.",
         "- Rear U-cowl covers both rear sides and the back.",
         "- Use Velcro on the inside lower ledges/chassis. Do not drill the rover.",
-        "- Future roof screw centers: x=22/78/122/178, y=±41.5 mm.",
+        "- Future roof/seam screw centers: x=22/78/122/178, y=±41.5 mm.",
+        "- The seam bridge pair screws across x=78 to x=122, joining each front rail to the rear U-cowl.",
         "",
         "## PETG/Bambu settings",
         "",

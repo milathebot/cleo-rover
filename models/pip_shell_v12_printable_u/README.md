@@ -17,7 +17,8 @@ Research-driven redesign after PETG failures. This is intentionally simple: side
 - Front left rail + front right rail cover the front sides only.
 - Rear U-cowl covers both rear sides and the back.
 - Use Velcro on the inside lower ledges/chassis. Do not drill the rover.
-- Future roof screw centers: x=22/78/122/178, y=±41.5 mm.
+- Future roof/seam screw centers: x=22/78/122/178, y=±41.5 mm.
+- The seam bridge pair screws across x=78 to x=122, joining each front rail to the rear U-cowl.
 
 ## PETG/Bambu settings
 
@@ -39,5 +40,5 @@ Research-driven redesign after PETG failures. This is intentionally simple: side
 - `pip_shell_v12_front_left_rail.stl`: 100.0 x 12.5 x 115.0 mm (OK)
 - `pip_shell_v12_front_right_rail.stl`: 100.0 x 12.5 x 115.0 mm (OK)
 - `pip_shell_v12_rear_u_cowl.stl`: 100.0 x 98.0 x 130.0 mm (OK)
-- `pip_shell_v12_seam_clip_pair.stl`: 24.5 x 93.0 x 3.2 mm (OK)
+- `pip_shell_v12_seam_clip_pair.stl`: 68.0 x 97.0 x 3.2 mm (OK)
 - `pip_shell_v12_insert_coupon_4p1_4p2_4p3.stl`: 72.0 x 20.0 x 6.4 mm (OK)
