@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from typing import Any
 
 from fastapi import FastAPI, Response
 from fastapi.responses import HTMLResponse
@@ -14,7 +15,7 @@ from .drivers import RoverBody
 from .hermes_bridge import ask_hermes_as_pip, hermes_configured
 from .hub import fetch_hub_snapshot
 from .mapping import map_summary, observation_items, scan_item, semantic_events_from_analysis
-from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
+from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
 from .supervisor import intent_to_actions, supervisor_snapshot, validate_intent
 from .persistence import RoverStore
@@ -1013,6 +1014,8 @@ async def pip_command(command: PipCommand) -> dict:
         return {"ok": True, "handled": True, "action": "greet", "result": await pip_greet(source=command.source)}
     if text in {"patrol", "pip patrol", "explore", "pip explore"}:
         return {"ok": True, "handled": True, "action": "life_tick", "result": await pip_life_tick(PipLifeTickCommand(allow_movement=command.allow_movement, force=True, reason=f"{command.source} patrol command"))}
+    if text in {"first adventure", "pip first adventure", "adventure", "pip adventure"}:
+        return {"ok": True, "handled": True, "action": "first_adventure", "result": await first_adventure_task(FirstAdventureCommand(zone="office", allow_movement=command.allow_movement, duration_seconds=30, explore_cycles=4, speak=True, compact=True, notes=f"{command.source} first adventure command"))}
     if text in {"observe", "pip observe", "look around", "pip look around"}:
         return {"ok": True, "handled": True, "action": "observe", "result": await vision_awareness_task(VisionAwarenessCommand(zone="office", capture=True, scan=True, compact=True, notes=f"{command.source} observe command"))}
     if text in {"stop", "pip stop"}:
@@ -1301,6 +1304,109 @@ async def little_being_loop(command: LittleBeingLoopCommand) -> dict:
     response = {"ok": True, "event": intro.model_dump(), "complete_event": done.model_dump(), "summary": summary, "safety": "Fast motion safety remains Pi-side: reactive explore + watchdog. Vision is awareness, not collision safety."}
     if not command.compact:
         response["steps"] = steps
+    return response
+
+
+def first_adventure_readiness(preflight_now: dict, observe: dict | None, adventure: dict | None, *, allow_movement: bool) -> dict:
+    failed = [check for check in preflight_now.get("checks", []) if not check.get("ok")]
+    scan_summary = (observe or {}).get("scan_summary") or {}
+    best = scan_summary.get("best") or {}
+    center = scan_summary.get("center") or {}
+    recommendations: list[str] = []
+    ready = not failed
+    if failed:
+        recommendations.append("fix failed preflight checks before floor movement")
+    if allow_movement and not ready:
+        recommendations.append("keep Pip in observe-only mode until preflight is green")
+    def maybe_float(value: Any) -> float | None:
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    best_distance = maybe_float(best.get("distance_cm"))
+    center_distance = maybe_float(center.get("distance_cm"))
+    if best_distance is not None and best_distance < 80:
+        recommendations.append("clear a wider starting bubble around Pip")
+    if center_distance is not None and center_distance < 60:
+        recommendations.append("start with Pip facing a more open direction")
+    reactive = (adventure or {}).get("summary", {}).get("reactive") or {}
+    if reactive.get("reflex_stop"):
+        ready = False
+        recommendations.append("reflex stop fired; inspect the obstacle path before another run")
+    if reactive.get("corner_search"):
+        recommendations.append("Pip had to search for an exit; widen the first-adventure area")
+    if not recommendations:
+        recommendations.append("ready for one supervised tiny floor adventure")
+    return {
+        "ready": ready,
+        "movement_mode": "tiny_supervised_floor" if allow_movement and ready else "observe_only",
+        "failed_checks": failed,
+        "recommendations": recommendations,
+    }
+
+
+@app.post("/tasks/first-adventure")
+async def first_adventure_task(command: FirstAdventureCommand) -> dict:
+    """Bounded launch ritual for Pip's first assembled-shell floor adventure."""
+    await body.stop()
+    pip_state["current_zone"] = command.zone
+    pip_state["mood"] = "curious"
+    save_pip_runtime()
+
+    preflight_mode = "floor-cautious" if command.allow_movement else "presence"
+    preflight_now = preflight(preflight_mode)
+    actions: list[dict] = [{"kind": "safe-stop", "result": {"ok": True, "stopped": True}}, {"kind": "preflight", "mode": preflight_mode, "ok": preflight_now.get("ok")}]
+
+    if command.require_preflight and not preflight_now.get("ok"):
+        await pip_set_expression(ExpressionMode.watching, "preflight", 0.45)
+        observe = await vision_awareness_task(VisionAwarenessCommand(zone=command.zone, capture=True, scan=True, angles=[-60, -30, 0, 30, 60], compact=True, notes="first adventure observe-only fallback"))
+        actions.append({"kind": "observe-only", "result": {"capture": observe.get("capture"), "scan_summary": observe.get("scan_summary")}})
+        readiness = first_adventure_readiness(preflight_now, observe, None, allow_movement=False)
+        event = remember_event(RoverEvent(kind=RoverEventKind.manual_control, source="first_adventure", label="preflight blocked first adventure", payload={"readiness": readiness, "actions": actions, "notes": command.notes}))
+        return {"ok": True, "started_movement": False, "event": event.model_dump(), "readiness": readiness, "actions": actions, "preflight": preflight_now, "next_step": "Fix preflight, then rerun first-adventure with --allow-movement."}
+
+    await pip_set_expression(ExpressionMode.curious, "ready?", 0.58)
+    if command.speak:
+        speech = speak_text("Pip first adventure preflight started. I will stay tiny and careful.")
+        actions.append({"kind": "speech", "result": speech})
+
+    observe = await vision_awareness_task(VisionAwarenessCommand(zone=command.zone, capture=True, scan=True, angles=[-60, -30, 0, 30, 60], compact=True, notes="first adventure opening observation"))
+    actions.append({"kind": "observe", "result": {"capture": observe.get("capture"), "scan_summary": observe.get("scan_summary")}})
+
+    adventure = await little_being_loop(
+        LittleBeingLoopCommand(
+            zone=command.zone,
+            allow_movement=command.allow_movement,
+            duration_seconds=command.duration_seconds,
+            explore_cycles=command.explore_cycles,
+            observe_every_cycles=max(1, command.explore_cycles),
+            capture_vision=False,
+            compact=True,
+            mood="curious",
+            notes=command.notes or "first adventure: assembled-shell supervised tiny exploration",
+        )
+    )
+    actions.append({"kind": "little-being-loop", "summary": adventure.get("summary")})
+
+    await body.stop()
+    await pip_set_expression(ExpressionMode.proud, "home", 0.55)
+    readiness = first_adventure_readiness(preflight_now, observe, adventure, allow_movement=command.allow_movement)
+    if command.speak:
+        line = "First adventure complete. " + ("I am ready for another tiny supervised step." if readiness["ready"] else "I need a little help before moving again.")
+        actions.append({"kind": "speech", "result": speak_text(line)})
+    event = remember_event(RoverEvent(kind=RoverEventKind.manual_control, source="first_adventure", label="first adventure complete", payload={"readiness": readiness, "actions": None if command.compact else actions, "notes": command.notes}))
+    response = {
+        "ok": True,
+        "started_movement": bool(command.allow_movement and preflight_now.get("ok")),
+        "event": event.model_dump(),
+        "readiness": readiness,
+        "preflight": preflight_now,
+        "summary": adventure.get("summary"),
+        "safety": "First adventure always begins with stop+preflight, uses vision/ultrasonic awareness, delegates motion to little-being/reactive-explore, then stops again.",
+    }
+    if not command.compact:
+        response["actions"] = actions
     return response
 
 

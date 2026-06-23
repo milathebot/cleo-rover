@@ -173,6 +173,17 @@ def main(argv: list[str] | None = None) -> int:
     floor_map_dry_run = sub.add_parser("floor-map-dry-run")
     floor_map_dry_run.add_argument("--zone", default="floor")
     floor_map_dry_run.add_argument("--steps", type=int, default=3)
+
+    first_adventure = sub.add_parser("first-adventure")
+    first_adventure.add_argument("--zone", default="office")
+    first_adventure.add_argument("--allow-movement", action="store_true")
+    first_adventure.add_argument("--duration-seconds", type=int, default=30)
+    first_adventure.add_argument("--explore-cycles", type=int, default=4)
+    first_adventure.add_argument("--skip-speech", action="store_true")
+    first_adventure.add_argument("--no-preflight-required", action="store_true")
+    first_adventure.add_argument("--verbose", action="store_true")
+    first_adventure.add_argument("--notes", default=None)
+
     sub.add_parser("movement-status")
     sub.add_parser("movement-revoke")
     sub.add_parser("supervisor-status")
@@ -364,6 +375,24 @@ def main(argv: list[str] | None = None) -> int:
         }
     elif args.cmd == "floor-map-dry-run":
         result = request(args.base, "POST", "/tasks/map-floor", {"zone": args.zone, "allow_movement": False, "steps": args.steps, "notes": "Telegram dry-run floor map"}, timeout=max(30.0, 10.0 + args.steps * 8.0))
+    elif args.cmd == "first-adventure":
+        timeout = max(45.0, 15.0 + args.duration_seconds + args.explore_cycles * 5.0)
+        result = request(
+            args.base,
+            "POST",
+            "/tasks/first-adventure",
+            {
+                "zone": args.zone,
+                "allow_movement": args.allow_movement,
+                "duration_seconds": args.duration_seconds,
+                "explore_cycles": args.explore_cycles,
+                "require_preflight": not args.no_preflight_required,
+                "speak": not args.skip_speech,
+                "compact": not args.verbose,
+                "notes": args.notes,
+            },
+            timeout=timeout,
+        )
     elif args.cmd == "autonomy":
         result = request(args.base, "GET", "/autonomy/state")
     elif args.cmd == "tick":

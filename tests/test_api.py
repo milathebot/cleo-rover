@@ -240,6 +240,25 @@ def test_little_being_loop_observes_and_uses_reactive_layer_without_movement():
     assert "reactive explore + watchdog" in data["safety"]
 
 
+def test_first_adventure_observe_only_wrapper_and_router():
+    task = client.post(
+        "/tasks/first-adventure",
+        json={"zone": "office", "allow_movement": False, "duration_seconds": 8, "explore_cycles": 1, "speak": False},
+    )
+    assert task.status_code == 200
+    data = task.json()
+    assert data["ok"] is True
+    assert data["started_movement"] is False
+    assert data["readiness"]["movement_mode"] == "observe_only"
+    assert "preflight" in data
+    assert "First adventure always begins" in data["safety"]
+
+    routed = client.post("/pip/command", json={"text": "first adventure", "source": "test", "allow_movement": False})
+    assert routed.status_code == 200
+    assert routed.json()["handled"] is True
+    assert routed.json()["action"] == "first_adventure"
+
+
 def test_pip_identity_modes_greet_and_interrupts():
     state = client.get("/pip/state")
     assert state.status_code == 200

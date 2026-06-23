@@ -177,6 +177,17 @@ class LittleBeingLoopCommand(BaseModel):
     notes: str | None = Field(default=None, max_length=240)
 
 
+class FirstAdventureCommand(BaseModel):
+    zone: str = Field(default="office", max_length=80)
+    allow_movement: bool = False
+    duration_seconds: int = Field(default=30, ge=5, le=180)
+    explore_cycles: int = Field(default=4, ge=1, le=12)
+    require_preflight: bool = True
+    speak: bool = True
+    compact: bool = True
+    notes: str | None = Field(default=None, max_length=240)
+
+
 class PipModeCommand(BaseModel):
     mode: str = Field(default="social", pattern="^(sleep|quiet|social|assistant)$")
     reason: str | None = Field(default=None, max_length=160)
