@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import time
+import urllib.error
+import urllib.request
 import wave
 from pathlib import Path
 from typing import Any
@@ -169,8 +172,106 @@ def play_tone(seconds: float = 0.35, hz: int = 880) -> dict[str, Any]:
     return {"ok": result.returncode == 0, "path": str(path), "cmd": cmd, "returncode": result.returncode, "stderr_tail": result.stderr[-500:]}
 
 
+def play_audio_file(path: str | Path, *, timeout: float = 20) -> dict[str, Any]:
+    path = Path(path)
+    card = os.getenv("ALSA_CARD")
+    if path.suffix.lower() == ".wav" and shutil.which("aplay"):
+        cmd = ["aplay"]
+        if card:
+            cmd += ["-D", f"plughw:{card},0"]
+        cmd.append(str(path))
+    elif shutil.which("mpg123"):
+        cmd = ["mpg123", "-q"]
+        if card:
+            cmd += ["-a", f"plughw:{card},0"]
+        cmd.append(str(path))
+    elif shutil.which("ffplay"):
+        cmd = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", str(path)]
+    else:
+        return {"ok": False, "error": "no audio player found for TTS output", "path": str(path)}
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    return {"ok": result.returncode == 0, "path": str(path), "cmd": cmd, "returncode": result.returncode, "stderr_tail": result.stderr[-700:]}
+
+
+def cloud_tts_speech(text: str) -> dict[str, Any] | None:
+    """Optional OpenAI-compatible TTS path.
+
+    Configure on the Pi via environment, never in git:
+    - CLEO_ROVER_TTS_API_BASE, e.g. https://api.openai.com/v1
+    - CLEO_ROVER_TTS_API_KEY
+    - CLEO_ROVER_TTS_MODEL, e.g. gpt-4o-mini-tts or provider equivalent
+    - CLEO_ROVER_TTS_VOICE, provider-specific voice id/name
+    - CLEO_ROVER_TTS_RESPONSE_FORMAT, defaults wav for aplay compatibility
+    """
+    base = os.getenv("CLEO_ROVER_TTS_API_BASE")
+    key = os.getenv("CLEO_ROVER_TTS_API_KEY")
+    if not base or not key:
+        return None
+    model = os.getenv("CLEO_ROVER_TTS_MODEL", "gpt-4o-mini-tts")
+    voice = os.getenv("CLEO_ROVER_TTS_VOICE", "alloy")
+    response_format = os.getenv("CLEO_ROVER_TTS_RESPONSE_FORMAT", "wav").lower()
+    suffix = ".wav" if response_format == "wav" else f".{response_format}"
+    path = Path(os.getenv("CLEO_ROVER_TTS_CACHE_DIR", "/tmp")) / f"cleo-rover-tts-{int(time.time() * 1000)}{suffix}"
+    payload = {
+        "model": model,
+        "voice": voice,
+        "input": text,
+        "response_format": response_format,
+    }
+    url = base.rstrip("/")
+    url = url + "/audio/speech" if url.endswith("/v1") else url + "/v1/audio/speech"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        method="POST",
+        headers={"content-type": "application/json", "authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            audio = resp.read()
+    except (urllib.error.URLError, TimeoutError) as exc:
+        return {"ok": False, "tool": "cloud_tts", "error": repr(exc), "fallback_allowed": True, "text": text}
+    if len(audio) < 128:
+        return {"ok": False, "tool": "cloud_tts", "error": "TTS response too small", "bytes": len(audio), "fallback_allowed": True, "text": text}
+    path.write_bytes(audio)
+    playback = play_audio_file(path, timeout=30)
+    return {"ok": bool(playback.get("ok")), "tool": "cloud_tts", "model": model, "voice": voice, "format": response_format, "path": str(path), "bytes": len(audio), "playback": playback, "text": text}
+
+
+def command_tts_speech(text: str) -> dict[str, Any] | None:
+    """Optional custom TTS command hook for non-OpenAI providers.
+
+    CLEO_ROVER_TTS_COMMAND may contain {text} and {output}. Example:
+    `my-tts --voice pip --text {text} --output {output}`.
+    The command must write a playable audio file.
+    """
+    import shlex
+
+    template = os.getenv("CLEO_ROVER_TTS_COMMAND")
+    if not template:
+        return None
+    output = Path(os.getenv("CLEO_ROVER_TTS_CACHE_DIR", "/tmp")) / f"cleo-rover-tts-cmd-{int(time.time() * 1000)}.wav"
+    try:
+        cmd = [part.format(text=text, output=str(output)) for part in shlex.split(template)]
+    except Exception as exc:
+        return {"ok": False, "tool": "command_tts", "error": f"bad CLEO_ROVER_TTS_COMMAND: {exc!r}", "text": text}
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
+    if result.returncode != 0 or not output.exists() or output.stat().st_size < 128:
+        return {"ok": False, "tool": "command_tts", "cmd": cmd, "returncode": result.returncode, "stderr_tail": result.stderr[-700:], "text": text}
+    playback = play_audio_file(output, timeout=30)
+    return {"ok": bool(playback.get("ok")), "tool": "command_tts", "cmd": cmd, "path": str(output), "bytes": output.stat().st_size, "playback": playback, "text": text}
+
+
 def speak_text(text: str) -> dict[str, Any]:
     text = str(text)[:240]
+    for provider in (cloud_tts_speech, command_tts_speech):
+        result = provider(text)
+        if result is None:
+            continue
+        if result.get("ok"):
+            return result
+        if os.getenv("CLEO_ROVER_TTS_FALLBACK", "true").lower() in {"0", "false", "no"}:
+            return result
     volume = os.getenv("CLEO_ROVER_SPEECH_VOLUME", "180")
     speed = os.getenv("CLEO_ROVER_SPEECH_SPEED", "150")
     card = os.getenv("ALSA_CARD")
