@@ -1260,9 +1260,9 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
             await asyncio.sleep(0.12)
             continue
 
-        crawl = await guarded_drive(DriveCommand(linear=command.crawl_linear, turn=0, duration_ms=180), require_permission=True)
-        plan.append({"kind": "crawl", "result": crawl})
-        await asyncio.sleep(0.22)
+        crawl = await guarded_drive(DriveCommand(linear=command.crawl_linear, turn=0, duration_ms=command.crawl_duration_ms), require_permission=True)
+        plan.append({"kind": "crawl", "result": crawl, "sense_after_ms": command.decision_pause_ms})
+        await asyncio.sleep(command.decision_pause_ms / 1000)
         if body.state.last_reflex_stop:
             plan.append({"kind": "reflex-stop", "result": body.state.last_reflex_stop})
             blocked_streak += 1
@@ -1276,7 +1276,7 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
         "summary": summary,
         "battery": battery_safety_summary(sensors_after),
         "event": event.model_dump(),
-        "safety": "Pi-side sense/decide/act loop with ramped wheel PWM, persistent forward watchdog, no forward crawl below front_clear_cm, and continued scan/rotate search when blocked.",
+        "safety": "Pi-side sense/decide/act loop with ramped wheel PWM, 20ms drive-monitor reflex checks, 30ms persistent forward watchdog, short configurable crawl pulses, no forward crawl below front_clear_cm, and continued scan/rotate search when blocked.",
     }
     response["plan"] = compact_plan(plan) if command.compact else plan
     return response
@@ -1349,7 +1349,9 @@ async def little_being_loop(command: LittleBeingLoopCommand) -> dict:
             allow_movement=movement_allowed,
             duration_seconds=remaining,
             max_cycles=command.explore_cycles,
-            crawl_linear=0.24,
+            crawl_linear=0.20,
+            crawl_duration_ms=120,
+            decision_pause_ms=80,
             front_clear_cm=130.0,
             front_stop_cm=55.0,
             front_emergency_cm=30.0,

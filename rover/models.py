@@ -144,7 +144,9 @@ class ReactiveExploreCommand(BaseModel):
     allow_movement: bool = False
     duration_seconds: int = Field(default=45, ge=1, le=300)
     max_cycles: int = Field(default=20, ge=1, le=80)
-    crawl_linear: float = Field(default=0.22, ge=0.0, le=0.5)
+    crawl_linear: float = Field(default=0.20, ge=0.0, le=0.5)
+    crawl_duration_ms: int = Field(default=120, ge=60, le=300)
+    decision_pause_ms: int = Field(default=80, ge=20, le=300)
     front_clear_cm: float = Field(default=120.0, ge=30.0, le=300.0)
     front_stop_cm: float = Field(default=45.0, ge=15.0, le=150.0)
     front_emergency_cm: float = Field(default=25.0, ge=5.0, le=80.0)
