@@ -3,6 +3,44 @@ from pathlib import Path
 from rover import peripherals
 
 
+def test_elevenlabs_tts_uses_native_endpoint(monkeypatch, tmp_path):
+    captured = {}
+
+    class DummyResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"ID3" + b"2" * 256
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["headers"] = dict(req.header_items())
+        captured["data"] = req.data
+        captured["timeout"] = timeout
+        return DummyResp()
+
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-secret")
+    monkeypatch.setenv("CLEO_ROVER_ELEVENLABS_VOICE_ID", "voice-123")
+    monkeypatch.setenv("CLEO_ROVER_ELEVENLABS_MODEL_ID", "eleven_multilingual_v2")
+    monkeypatch.setenv("CLEO_ROVER_TTS_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(peripherals.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(peripherals, "play_audio_file", lambda path, timeout=20: {"ok": True, "path": str(path)})
+
+    result = peripherals.elevenlabs_tts_speech("hi pip")
+    assert result is not None
+    assert result["ok"] is True
+    assert result["tool"] == "elevenlabs_tts"
+    assert result["model"] == "eleven_multilingual_v2"
+    assert result["voice_id"] == "voice-123"
+    assert captured["url"] == "https://api.elevenlabs.io/v1/text-to-speech/voice-123?output_format=mp3_44100_128"
+    assert captured["headers"]["Xi-api-key"] == "eleven-secret"
+    assert Path(result["path"]).exists()
+
+
 def test_cloud_tts_uses_openai_compatible_speech_endpoint(monkeypatch, tmp_path):
     captured = {}
 

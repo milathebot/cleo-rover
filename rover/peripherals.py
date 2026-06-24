@@ -193,6 +193,53 @@ def play_audio_file(path: str | Path, *, timeout: float = 20) -> dict[str, Any]:
     return {"ok": result.returncode == 0, "path": str(path), "cmd": cmd, "returncode": result.returncode, "stderr_tail": result.stderr[-700:]}
 
 
+def elevenlabs_tts_speech(text: str) -> dict[str, Any] | None:
+    """Optional native ElevenLabs TTS path.
+
+    Configure on the Pi via environment, never in git:
+    - ELEVENLABS_API_KEY or CLEO_ROVER_ELEVENLABS_API_KEY
+    - CLEO_ROVER_ELEVENLABS_VOICE_ID
+    - CLEO_ROVER_ELEVENLABS_MODEL_ID, e.g. eleven_multilingual_v2
+    - CLEO_ROVER_ELEVENLABS_OUTPUT_FORMAT, defaults mp3_44100_128
+    """
+    key = os.getenv("CLEO_ROVER_ELEVENLABS_API_KEY") or os.getenv("ELEVENLABS_API_KEY")
+    voice_id = os.getenv("CLEO_ROVER_ELEVENLABS_VOICE_ID")
+    if not key or not voice_id:
+        return None
+    model_id = os.getenv("CLEO_ROVER_ELEVENLABS_MODEL_ID", "eleven_multilingual_v2")
+    output_format = os.getenv("CLEO_ROVER_ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128")
+    base = os.getenv("CLEO_ROVER_ELEVENLABS_API_BASE", "https://api.elevenlabs.io/v1").rstrip("/")
+    suffix = ".mp3" if output_format.startswith("mp3") else ".wav"
+    path = Path(os.getenv("CLEO_ROVER_TTS_CACHE_DIR", "/tmp")) / f"cleo-rover-elevenlabs-{int(time.time() * 1000)}{suffix}"
+    payload = {
+        "text": text,
+        "model_id": model_id,
+        "voice_settings": {
+            "stability": float(os.getenv("CLEO_ROVER_ELEVENLABS_STABILITY", "0.45")),
+            "similarity_boost": float(os.getenv("CLEO_ROVER_ELEVENLABS_SIMILARITY", "0.8")),
+            "style": float(os.getenv("CLEO_ROVER_ELEVENLABS_STYLE", "0.15")),
+            "use_speaker_boost": os.getenv("CLEO_ROVER_ELEVENLABS_SPEAKER_BOOST", "true").lower() not in {"0", "false", "no"},
+        },
+    }
+    url = f"{base}/text-to-speech/{voice_id}?output_format={output_format}"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        method="POST",
+        headers={"content-type": "application/json", "xi-api-key": key, "accept": "audio/mpeg"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            audio = resp.read()
+    except (urllib.error.URLError, TimeoutError) as exc:
+        return {"ok": False, "tool": "elevenlabs_tts", "error": repr(exc), "fallback_allowed": True, "text": text}
+    if len(audio) < 128:
+        return {"ok": False, "tool": "elevenlabs_tts", "error": "TTS response too small", "bytes": len(audio), "fallback_allowed": True, "text": text}
+    path.write_bytes(audio)
+    playback = play_audio_file(path, timeout=30)
+    return {"ok": bool(playback.get("ok")), "tool": "elevenlabs_tts", "model": model_id, "voice_id": voice_id, "format": output_format, "path": str(path), "bytes": len(audio), "playback": playback, "text": text}
+
+
 def cloud_tts_speech(text: str) -> dict[str, Any] | None:
     """Optional OpenAI-compatible TTS path.
 
@@ -264,7 +311,7 @@ def command_tts_speech(text: str) -> dict[str, Any] | None:
 
 def speak_text(text: str) -> dict[str, Any]:
     text = str(text)[:240]
-    for provider in (cloud_tts_speech, command_tts_speech):
+    for provider in (elevenlabs_tts_speech, cloud_tts_speech, command_tts_speech):
         result = provider(text)
         if result is None:
             continue
