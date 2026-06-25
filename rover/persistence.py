@@ -102,12 +102,20 @@ class RoverStore:
             )
         return event
 
-    def recent_events(self, limit: int = 25, since: float | None = None) -> list[RoverEvent]:
+    def recent_events(self, limit: int = 25, since: float | None = None, kind: str | None = None) -> list[RoverEvent]:
         sql = "SELECT * FROM events"
+        clauses: list[str] = []
         params: list[Any] = []
         if since is not None:
-            sql += " WHERE timestamp >= ?"
+            clauses.append("timestamp >= ?")
             params.append(since)
+        if kind is not None:
+            # Kind-filtered lookup lets the brain find the latest vision_analysis
+            # even when hundreds of per-angle scan events flood the recent window.
+            clauses.append("kind = ?")
+            params.append(kind)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY timestamp DESC LIMIT ?"
         params.append(max(1, min(limit, 500)))
         with self.connect() as con:

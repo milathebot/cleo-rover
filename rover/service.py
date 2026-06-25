@@ -28,6 +28,7 @@ from .navigation import (
     decide_hallway_action,
 )
 from .odometry import estimate_chunk_distance_cm, motion_model_from
+from . import vision_service
 from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, HallwayScoutCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
 from .pip_brain import build_pip_brain
@@ -501,6 +502,29 @@ def vision_analysis(command: VisionAnalysisCommand) -> dict:
     stored = [store.upsert_spatial(item) for item in items]
     semantic_events = [remember_event(event) for event in semantic_events_from_analysis(command.model_dump(), distance_cm=distance_cm, bearing_deg=bearing)]
     return {"ok": True, "event": saved.model_dump(), "semantic_events": [event.model_dump() for event in semantic_events], "items": [item.model_dump() for item in stored], "sensors": sensors_now}
+
+
+VISION_ANALYSIS_FIELDS = {"summary", "labels", "objects", "confidence", "zone", "snapshot_path", "source", "clear_path", "hazards"}
+
+
+def ingest_local_vision(zone: str, image_path: str | None) -> dict:
+    """Run on-Pi vision on a captured frame and emit a real vision_analysis event.
+
+    This is what finally gives pip-brain fresh latest_vision instead of null: the
+    analysis flows through the same path as external vision (events + spatial +
+    semantic). Degrades to a low-confidence placeholder when no detector/model is
+    available, so the pipeline is never silently empty.
+    """
+    analysis = vision_service.analyze_frame(
+        image_path,
+        zone=zone,
+        conf_threshold=CONFIG.vision.conf_threshold,
+        model_path=CONFIG.vision.model_path,
+        labelmap_path=CONFIG.vision.labelmap_path,
+    )
+    payload = {key: value for key, value in analysis.items() if key in VISION_ANALYSIS_FIELDS}
+    result = vision_analysis(VisionAnalysisCommand.model_validate(payload))
+    return {"analysis": analysis, "ingested_ok": bool(result.get("ok"))}
 
 
 @app.get("/autonomy/state")
@@ -1004,6 +1028,8 @@ def pip_public_state() -> dict:
 
 def pip_brain_snapshot(*, compact: bool = True) -> dict:
     sensors_now = body.sensors()
+    # Kind-filtered fetch so the latest vision survives a flood of scan events.
+    vision_events = store.recent_events(1, kind=RoverEventKind.vision_analysis.value)
     return build_pip_brain(
         pip_state=pip_state,
         identity=pip_identity,
@@ -1015,6 +1041,8 @@ def pip_brain_snapshot(*, compact: bool = True) -> dict:
         recent_events=store.recent_events(40),
         spatial_items=store.list_spatial(100),
         compact=compact,
+        latest_vision_event=vision_events[0] if vision_events else None,
+        hazard_max_age_s=CONFIG.vision.hazard_max_age_s,
     )
 
 
@@ -1465,6 +1493,11 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
 @app.post("/tasks/vision-awareness")
 async def vision_awareness_task(command: VisionAwarenessCommand) -> dict:
     capture = capture_camera_snapshot(CONFIG.camera.capture_dir, width=CONFIG.camera.width, height=CONFIG.camera.height) if body.mode == "hardware" and command.capture else None
+    # On a real capture, run on-Pi vision and emit a vision_analysis event so the
+    # brain gets fresh latest_vision (fixes the latest_vision:null path).
+    local_vision = None
+    if CONFIG.vision.enabled and capture and capture.get("ok"):
+        local_vision = ingest_local_vision(command.zone, capture.get("path"))
     scan = await visual_map_scan(VisualMapScanCommand(zone=command.zone, angles=command.angles, settle_ms=250, capture_each_angle=False)) if command.scan else None
     scan_summary = scan_observation_summary(scan) if scan else None
     placeholder_analysis = None
@@ -1493,7 +1526,8 @@ async def vision_awareness_task(command: VisionAwarenessCommand) -> dict:
         "scan_summary": scan_summary,
         "event": event.model_dump(),
         "placeholder_analysis": placeholder_analysis,
-        "next_step": "Send capture to Hermes vision, then POST labels/objects to /vision/analysis.",
+        "local_vision": local_vision,
+        "next_step": "On-Pi vision ran if a model is installed; otherwise send capture to Hermes vision and POST to /vision/analysis.",
     }
     if not command.compact:
         response["scan"] = scan
@@ -1762,6 +1796,16 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
         best_distance = float(best.get("distance_cm")) if best and best.get("distance_cm") is not None else None
         best_bearing = float(best.get("bearing_deg")) if best and best.get("bearing_deg") is not None else None
 
+        # Advisory camera cue: only adds caution (holds forward motion), never
+        # relaxes a reflex. Block on a fresh, confident "not clear ahead" + hazard.
+        vision_block = False
+        if CONFIG.vision.enabled:
+            vis = store.recent_events(1, kind=RoverEventKind.vision_analysis.value)
+            if vis:
+                vp = vis[0].payload or {}
+                if vp.get("clear_path") is False and (vp.get("hazards") or float(vp.get("confidence", 0.0) or 0.0) >= 0.5):
+                    vision_block = True
+
         decision = decide_hallway_action(
             raw_front_cm=raw_front_cm,
             scan_center_cm=scan_center_cm,
@@ -1775,6 +1819,7 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
             confirm_blocked=command.confirm_blocked,
             confirm_clear=command.confirm_clear,
             creep_step_cm=command.min_step_cm,
+            vision_block=vision_block,
         )
         blocked_streak = decision.blocked_streak
         clear_streak = decision.clear_streak

@@ -86,8 +86,14 @@ def decide_hallway_action(
     confirm_blocked: int,
     confirm_clear: int,
     creep_step_cm: float,
+    vision_block: bool = False,
 ) -> DoorwayDecision:
-    """Decide one hallway-scout cycle's action. Pure function (no side effects)."""
+    """Decide one hallway-scout cycle's action. Pure function (no side effects).
+
+    vision_block is an ADVISORY cue from camera perception: when True, any forward
+    motion (advance/creep) is downgraded to HOLD. It can only add caution; it
+    never relaxes the ultrasonic/cliff/bumper reflexes or turns Pip.
+    """
 
     # Scan-center is primary; raw front is only a fallback when no scan exists.
     decision_front = scan_center_cm if scan_center_cm is not None else raw_front_cm
@@ -100,6 +106,10 @@ def decide_hallway_action(
     raw_hard = raw_front_cm is not None and raw_front_cm < bands.reflex_hard_cm
 
     def make(action, reason, phase, *, blocked, clear, step=None) -> DoorwayDecision:
+        if vision_block and action in (ACTION_ADVANCE, ACTION_CREEP):
+            # Camera advisory: do not move forward, but keep safety/turn logic intact.
+            action, step = ACTION_HOLD, None
+            reason = f"vision: path not clear ahead; holding ({reason})"
         return DoorwayDecision(
             action=action,
             reason=reason,

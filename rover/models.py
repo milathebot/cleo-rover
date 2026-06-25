@@ -110,6 +110,10 @@ class VisionAnalysisCommand(BaseModel):
     zone: str = Field(default="unknown", max_length=80)
     snapshot_path: str | None = Field(default=None, max_length=240)
     source: str = Field(default="external_vision", max_length=40)
+    # Advisory navigation cues (None = unknown). Vision can add caution but never
+    # relaxes the ultrasonic/cliff/bumper reflexes.
+    clear_path: bool | None = None
+    hazards: list[str] = Field(default_factory=list, max_length=20)
 
 
 class MapScanCommand(BaseModel):

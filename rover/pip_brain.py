@@ -43,8 +43,9 @@ def _recent_vision(events: list[RoverEvent]) -> dict[str, Any] | None:
     return None
 
 
-def _hazards(events: list[RoverEvent], items: list[SpatialMemoryItem], sensors: dict[str, Any], *, stop_cm: float) -> list[dict[str, Any]]:
+def _hazards(events: list[RoverEvent], items: list[SpatialMemoryItem], sensors: dict[str, Any], *, stop_cm: float, max_item_age_s: float = 120.0) -> list[dict[str, Any]]:
     hazards: list[dict[str, Any]] = []
+    now = time.time()
     front = sensors.get("front_distance_cm")
     if front is not None:
         try:
@@ -61,7 +62,12 @@ def _hazards(events: list[RoverEvent], items: list[SpatialMemoryItem], sensors: 
     for item in items[:25]:
         label = item.label.lower()
         if item.kind in {"vision_pet", "vision_person", "vision_obstacle"} or any(word in label for word in HAZARD_LABEL_WORDS):
-            hazards.append({"kind": item.kind, "detail": item.label, "zone": item.zone, "bearing_deg": item.bearing_deg, "distance_m": item.distance_m, "severity": "medium"})
+            # Age-gate remembered sightings: a cat seen 100 minutes ago is not a
+            # *live* hazard. Only fresh sightings should constrain movement.
+            age = (now - item.last_seen_at) if item.last_seen_at else None
+            if age is not None and age > max_item_age_s:
+                continue
+            hazards.append({"kind": item.kind, "detail": item.label, "zone": item.zone, "bearing_deg": item.bearing_deg, "distance_m": item.distance_m, "severity": "medium", "age_seconds": round(age, 1) if age is not None else None})
     # Keep the packet compact and stable.
     return hazards[:8]
 
@@ -167,11 +173,15 @@ def build_pip_brain(
     recent_events: list[RoverEvent],
     spatial_items: list[SpatialMemoryItem],
     compact: bool = True,
+    latest_vision_event: RoverEvent | None = None,
+    hazard_max_age_s: float = 120.0,
 ) -> dict[str, Any]:
     stop_cm = float((status.get("safety") or {}).get("front_stop_distance_cm") or sensors.get("front_stop_distance_cm") or 18.0)
     range_state = range_state_from_samples([sensors.get("front_distance_cm")], stop_cm=stop_cm)
-    recent_vision = _recent_vision(recent_events)
-    hazards = _hazards(recent_events, spatial_items, sensors, stop_cm=stop_cm)
+    # Prefer a kind-filtered latest vision event so fresh vision is not evicted by
+    # a flood of per-angle scan events (the old latest_vision:null bug).
+    recent_vision = _recent_vision([latest_vision_event]) if latest_vision_event is not None else _recent_vision(recent_events)
+    hazards = _hazards(recent_events, spatial_items, sensors, stop_cm=stop_cm, max_item_age_s=hazard_max_age_s)
     room = _room_hypothesis(pip_state, recent_vision, spatial_items)
     desire = _desire_and_next_step(
         pip_state=pip_state,

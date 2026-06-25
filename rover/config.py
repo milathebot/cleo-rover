@@ -105,6 +105,21 @@ class AudioConfig(BaseModel):
     speaker_amp: str = "max98357a-i2s"
 
 
+class VisionConfig(BaseModel):
+    """On-Pi camera perception. Advisory only; never relaxes the reflexes.
+
+    With the optional `vision` extra installed and a model file present, a
+    lightweight INT8 detector runs on captures; otherwise a low-confidence
+    placeholder keeps the perception->brain pipeline alive.
+    """
+
+    enabled: bool = True
+    model_path: str | None = None
+    labelmap_path: str | None = None
+    conf_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
+    hazard_max_age_s: float = Field(default=120.0, ge=5.0, le=3600.0)
+
+
 class OdometryConfig(BaseModel):
     """Open-loop motion-model coefficients (no encoders/IMU; calibrated guesses).
 
@@ -166,6 +181,7 @@ class RoverConfig(BaseModel):
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     odometry: OdometryConfig = Field(default_factory=OdometryConfig)
+    vision: VisionConfig = Field(default_factory=VisionConfig)
     life_loop: LifeLoopConfig = Field(default_factory=LifeLoopConfig)
 
     def public_summary(self) -> dict[str, Any]:
