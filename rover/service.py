@@ -687,7 +687,12 @@ async def adaptive_forward_stride(total_cm: float, *, chunk_cm: float, require_p
         this_chunk = min(chunk_limit, remaining)
         move = await move_step(MoveStepCommand(forward_cm=this_chunk, require_permission=require_permission))
         chunks.append({"requested_cm": round(this_chunk, 1), "front_before_cm": front_value, "result": move})
-        await asyncio.sleep(0.15)
+        # Let the asynchronous drive monitor finish the requested pulse. Previously
+        # adaptive stride stopped after 150ms, cutting 570-850ms calibrated chunks
+        # into tiny nudges even though direct move-step calibration was correct.
+        command_payload = move.get("command") if isinstance(move, dict) else None
+        duration_ms = float(command_payload.get("duration_ms", 0)) if isinstance(command_payload, dict) else 0.0
+        await asyncio.sleep(max(0.15, duration_ms / 1000.0 + 0.05))
         await body.stop()
         if not move.get("ok"):
             return {"ok": False, "kind": "adaptive-stride", "reason": "chunk move failed", "planned_cm": total_cm, "travelled_cm": round(travelled, 1), "chunks": chunks}
