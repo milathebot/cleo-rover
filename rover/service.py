@@ -137,6 +137,19 @@ def active_movement_grant() -> dict | None:
     return movement_grant
 
 
+def extend_active_movement_grant(seconds: float) -> None:
+    """Keep an internal task grant alive while a supervised task is still running.
+
+    Speech/camera scans can take longer than the original movement window. This
+    does not move the rover by itself; it only prevents safe, short chunks inside
+    the current task from failing due to narration latency.
+    """
+    global movement_grant
+    if movement_grant is None or not movement_grant.get("active"):
+        return
+    movement_grant["expires_at"] = max(float(movement_grant.get("expires_at", 0)), time.time() + float(seconds))
+
+
 def sensor_safety_event(sensors_now: dict, *, source: str) -> RoverEvent | None:
     distance = sensors_now.get("front_distance_cm")
     if distance is None:
@@ -665,6 +678,7 @@ async def adaptive_forward_stride(total_cm: float, *, chunk_cm: float, require_p
         if front_value is None or front_value < brake_cm:
             await body.stop()
             return {"ok": False, "kind": "adaptive-stride", "reason": "front blocked before chunk", "front_distance_cm": front_value, "planned_cm": total_cm, "travelled_cm": round(travelled, 1), "chunks": chunks}
+        extend_active_movement_grant(12)
         this_chunk = min(chunk_limit, remaining)
         move = await move_step(MoveStepCommand(forward_cm=this_chunk, require_permission=require_permission))
         chunks.append({"requested_cm": round(this_chunk, 1), "front_before_cm": front_value, "result": move})
@@ -1619,10 +1633,11 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
         await body.stop()
         return {"ok": False, "started_movement": False, "reason": "preflight failed", "preflight": preflight_now, "actions": actions}
 
+    estimated_cycle_seconds = command.pause_seconds + (22.0 if command.speak else 8.0)
     grant = MovementPermissionCommand(
         task=f"hallway-scout:{command.zone}",
         allow_movement=True,
-        duration_seconds=max(20, command.cycles * 8),
+        duration_seconds=int(max(90 if command.speak else 30, 30 + command.cycles * estimated_cycle_seconds)),
         max_linear=0.40,
         max_turn=0.75,
         notes=command.notes or "supervised fast hallway scout",
@@ -1663,23 +1678,27 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
             blocked_streak += 1
             if command.speak:
                 actions.append({"kind": "speech", "cycle": cycle, "result": speak_text("Range uncertain. I am scanning for a safe opening.")})
+            extend_active_movement_grant(20)
             action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason="front range unknown")
         elif front_value < command.blocked_cm:
             blocked_streak += 1
             await body.stop()
             if command.speak:
                 actions.append({"kind": "speech", "cycle": cycle, "result": speak_text("Too close. I am stopping and looking for another way.")})
+            extend_active_movement_grant(20)
             action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"front blocked {front_value:.1f}cm")
         elif center_distance is not None and center_distance < command.clear_cm:
             blocked_streak += 1
             if command.speak:
                 actions.append({"kind": "speech", "cycle": cycle, "result": speak_text("Doorway is close. I am scanning before I move.")})
+            extend_active_movement_grant(20)
             action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"center not clear {center_distance:.1f}cm")
         elif best_bearing is not None and best_distance is not None and abs(best_bearing) >= 18.0 and best_distance > (center_distance or 0.0) + 25.0:
             blocked_streak += 1
             if command.speak:
                 direction = "right" if best_bearing > 0 else "left"
                 actions.append({"kind": "speech", "cycle": cycle, "result": speak_text(f"I see more room to the {direction}. Turning to line up.")})
+            extend_active_movement_grant(20)
             action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"better opening at {best_bearing:.0f}deg")
         else:
             blocked_streak = 0
@@ -1695,6 +1714,7 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
                 )
             if command.speak:
                 actions.append({"kind": "speech", "cycle": cycle, "result": speak_text(f"Path looks open. Moving about {planned_step:.0f} centimeters.")})
+            extend_active_movement_grant(20)
             move = await adaptive_forward_stride(planned_step, chunk_cm=command.stride_chunk_cm, require_permission=True, brake_cm=command.blocked_cm)
             action = {"kind": "adaptive-move" if command.adaptive_step else "move-step", "planned_step_cm": planned_step, "result": move}
 
