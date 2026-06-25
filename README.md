@@ -59,12 +59,19 @@ New endpoints: `/mind/status`, `/mind/step`, `/hearing/listen`,
 `life_loop.heartbeat_seconds`. Optional extras: `pip install '.[vision]'` and
 `'.[voice]'` (ARM-guarded; no-ops on dev hosts).
 
+It also adds a **self-directed layer** (default-off): a behavior-arbitration loop
+(`/pip/arbiter`) that picks what to do from mood/energy/curiosity/battery/goals/
+people/time, auto self-preservation (low battery → return-to-charger), a goal/
+mission layer the LLM mind can set (`/pip/goal`, `set_goal`), person/pet social
+reactions, quiet-hours obedience, thermal back-off, and a stuck-escalation ladder.
+
 Everything is verifiable now in simulator + unit tests (`python -m pytest -q`,
-171 passing). Only physical *calibration* is left for supervised hardware runs:
-odometry coefficients (UMBmark), vision FPS/threshold, USB-mic levels/wake-word,
-and verifying IR/bumper polarity before enabling the cliff/bumper reflexes. None
-of those are on the safety-critical path — the reflexes and `validate_intent`
-are proven in sim first.
+191 passing). Only physical *calibration + deliberate enablement* is left for
+supervised hardware runs — odometry coefficients (UMBmark), vision FPS/threshold,
+USB-mic levels/wake-word, verifying IR/bumper polarity before enabling the cliff/
+bumper reflexes, and turning on the arbiter. None are on the safety-critical path
+(the reflexes and `validate_intent` are proven in sim first). Step-by-step:
+[`docs/HANDOVER_2026-06-25_PIP_ENABLE_ON_HARDWARE.md`](docs/HANDOVER_2026-06-25_PIP_ENABLE_ON_HARDWARE.md).
 
 ## What works on the current Pi 4B rover
 
@@ -192,6 +199,11 @@ POST /autonomy/heartbeat
 POST /hearing/listen
 POST /tasks/line-follow
 POST /tasks/return-to
+GET  /pip/arbiter
+POST /pip/arbiter/tick
+GET  /pip/goal
+POST /pip/goal
+DELETE /pip/goal
 ```
 
 ## Autonomy phases implemented
