@@ -56,6 +56,12 @@ class SensorConfig(BaseModel):
     bumper_right_pin: int | None = None
     battery_monitor: str = "ads7830-channel-2"
     adc_i2c_address: str = "0x48"
+    # FNK0043 PCB revision selects a PAIRED ADC (coeff, divider-multiplier): v2 =
+    # (5.2, x2), v1 = (3.3, x3). A wrong version silently misreads the battery by
+    # ~33%. Verify via silkscreen / params.json (a multimeter cross-check is in the
+    # calibration checklist). adc_voltage_coefficient is kept for back-compat but
+    # the battery path derives both from pcb_version so they can't drift apart.
+    pcb_version: int = Field(default=2, ge=1, le=2)
     adc_voltage_coefficient: float = 5.2
     line_left_pin: int = 14
     line_center_pin: int = 15
@@ -296,6 +302,12 @@ class LifeLoopConfig(BaseModel):
     # Auto self-preservation: at/below this battery %, the arbiter heads for the
     # charger (return-to-landmark) instead of exploring; critically low still asks.
     return_to_charger_min_battery: float = Field(default=35.0, ge=5.0, le=80.0)
+    # RGB-as-expression (Pip has no display yet): a small loop animates the 8-LED
+    # strip to reflect mood/energy (breathe/pulse) + charging/low-battery/alert.
+    # Auto-starts only on hardware. The strip is Pip's primary "aliveness" channel.
+    rgb_expression_enabled: bool = True
+    rgb_expression_hz: int = Field(default=5, ge=1, le=30)
+    rgb_max_brightness: int = Field(default=28, ge=1, le=120)
     personality: PersonalityConfig = Field(default_factory=PersonalityConfig)
     quiet_hours: QuietHoursConfig = Field(default_factory=QuietHoursConfig)
     behavior_cooldowns: BehaviorCooldownConfig = Field(default_factory=BehaviorCooldownConfig)

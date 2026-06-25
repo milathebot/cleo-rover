@@ -38,8 +38,11 @@ from . import vfh as vfh_mod
 from . import consolidation as consolidation_mod
 from . import perception as perception_mod
 from . import cruise as cruise_mod
+from . import battery as battery_mod
+from . import rgb_affect as rgb_affect_mod
 from .occupancy import OccupancyGrid, grid_config_from
 from .topo_map import TopoMap
+from . import topo_executor as topo_exec
 from .wall_follow import wall_follow_config_from, wall_follow_step, ACTION_INSIDE_CORNER
 from .models import Goal
 from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, HallwayScoutCommand, LineFollowCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
@@ -121,6 +124,36 @@ _heartbeat_count = 0
 # nav.continuous_motion_enabled; the dry-run endpoint works anywhere.
 CRUISE_PARAMS = cruise_mod.cruise_params_from(CONFIG.nav, CONFIG.odometry, CONFIG.safety)
 CRUISE_SNAPSHOT = perception_mod.PolarSnapshot()
+# Honest battery state-of-charge + health (sag-aware, idle-gated, debounced low).
+BATTERY = battery_mod.BatteryEstimator()
+_last_battery: Any = None
+_rgb_task_handle: Any = None
+
+
+def update_battery(sensors_now: dict) -> Any:
+    """Feed the battery estimator and remember its latest reading (for RGB + arbiter)."""
+    global _last_battery
+    _last_battery = BATTERY.update(voltage=sensors_now.get("battery_voltage"), motors_active=not body.state.stopped)
+    return _last_battery
+
+
+def compute_affect_frame(phase: float = 0.0):
+    """Map Pip's current feelings + battery/alert state to an RGB affect frame."""
+    feelings = pip_feelings()
+    rs = body.state.last_reflex_stop
+    alert = bool(rs and (time.time() - float(rs.get("time") or 0.0)) < 3.0)
+    low_battery = bool(_last_battery and (_last_battery.warn or _last_battery.critical))
+    charging = bool(_last_battery and _last_battery.charging)
+    return rgb_affect_mod.affect_to_frame(
+        str(feelings.get("mood") or "calm"),
+        energy=float(feelings.get("energy") or 0.6),
+        charging=charging,
+        low_battery=low_battery,
+        alert=alert,
+        asleep=pip_state.get("mode") == "sleep",
+        max_brightness=int(CONFIG.life_loop.rgb_max_brightness),
+        phase=phase,
+    )
 _cruise_stop_event: Any = None
 _perception_task_handle: Any = None
 _cruise_task_handle: Any = None
@@ -178,11 +211,38 @@ def _start_life_heartbeat() -> None:
     _heartbeat_task = asyncio.create_task(loop())
 
 
+def _start_rgb_expression() -> None:
+    """Animate the RGB strip to reflect Pip's mood/energy/state (hardware only).
+    With no display, this is Pip's primary 'aliveness' channel."""
+    global _rgb_task_handle
+    hz = CONFIG.life_loop.rgb_expression_hz
+    if body.mode != "hardware" or not CONFIG.life_loop.rgb_expression_enabled or hz <= 0:
+        return
+    if _rgb_task_handle and not _rgb_task_handle.done():
+        return
+
+    async def loop() -> None:
+        period = 1.0 / hz
+        phase = 0.0
+        while True:
+            await asyncio.sleep(period)
+            try:
+                frame = compute_affect_frame(phase=phase)
+                body.set_rgb(RGBCommand(red=frame.color[0], green=frame.color[1], blue=frame.color[2], brightness=frame.brightness))
+            except Exception:
+                pass
+            # ~5s breathe period: advance phase so a full cycle ~= 5 seconds.
+            phase = (phase + period / 5.0) % 1.0
+
+    _rgb_task_handle = asyncio.create_task(loop())
+
+
 @app.on_event("startup")
 async def start_body_watchdog() -> None:
     body.start_safety_watchdog()
     _start_life_heartbeat()
     _start_arbiter_loop()
+    _start_rgb_expression()
 
 
 @app.on_event("shutdown")
@@ -309,6 +369,8 @@ def life_heartbeat_step() -> dict:
     feelings. Lets the emotional state evolve without any external poke (D19)."""
     sensors_now = body.sensors()
     percent = sensors_now.get("battery_percent")
+    # Feed the sag-aware estimator (idle samples are trusted; in-motion advisory).
+    update_battery(sensors_now)
     if percent is not None:
         remember_event(RoverEvent(kind=RoverEventKind.battery, source="heartbeat", value=float(percent), payload={"percent": percent}))
     idle = remember_event(RoverEvent(kind=RoverEventKind.idle_tick, source="heartbeat", timestamp=time.time()))
@@ -1787,6 +1849,53 @@ def memory_facts(limit: int = 100) -> dict:
     return {"ok": True, "facts": store.list_facts(limit)}
 
 
+@app.get("/battery")
+def battery_status() -> dict:
+    """Honest battery state: sag-aware SOC, charging trend, debounced low/critical.
+
+    Reads fresh, feeds the estimator (idle vs in-motion), and returns its view.
+    SOC uses the real 2S Li-ion resting curve, not the old linear guess."""
+    sensors_now = body.sensors()
+    reading = update_battery(sensors_now)
+    return {
+        "ok": True,
+        "pcb_version": CONFIG.sensors.pcb_version,
+        "voltage": reading.voltage,
+        "resting_voltage": reading.resting_voltage,
+        "soc_percent": reading.soc_percent,
+        "instantaneous_soc": reading.instantaneous_soc,
+        "charging": reading.charging,
+        "warn": reading.warn,
+        "critical": reading.critical,
+        "trusted": reading.trusted,
+        "note": reading.note,
+        "thresholds": {"warn_v": BATTERY.warn_v, "critical_v": BATTERY.critical_v},
+    }
+
+
+@app.get("/calibration")
+def calibration_status() -> dict:
+    """Power-up bring-up: the ordered FNK0043 calibration checklist + the auto-
+    checkable readiness gates (sensor readiness, plausible battery) so Pip can
+    confirm it is ready for a supervised drive after a short calibration."""
+    from . import calibration as calibration_mod
+
+    sensors_now = body.sensors()
+    reading = update_battery(sensors_now)
+    gates = calibration_mod.autonomy_gates(
+        sensors=sensors_now, battery_voltage=getattr(reading, "voltage", None), pcb_version=CONFIG.sensors.pcb_version
+    )
+    return {"ok": True, "mode": body.mode, "checklist": calibration_mod.CHECKLIST, **gates}
+
+
+@app.get("/pip/rgb-affect")
+def pip_rgb_affect() -> dict:
+    """The RGB expression frame Pip is showing now (mood->colour/pattern). With no
+    display, the LED strip is the expression channel. Sim-safe (computes only)."""
+    frame = compute_affect_frame(phase=0.0)
+    return {"ok": True, "color": list(frame.color), "brightness": frame.brightness, "pattern": frame.pattern, "label": frame.label, "enabled": CONFIG.life_loop.rgb_expression_enabled}
+
+
 @app.post("/vision/flow")
 def vision_flow() -> dict:
     """Advisory optical-flow stall/looming cue. Needs OpenCV + a live camera; in
@@ -1887,6 +1996,56 @@ async def pip_cruise(on: bool = False, dry_run: bool = True, zone: str = "cruise
         )
     )
     return {"ok": True, "cruising": True, "speed_cap_linear": round(cruise_mod.cruise_speed_cap(CRUISE_PARAMS), 3)}
+
+
+@app.post("/tasks/return-home")
+async def return_home_task(goal: str = "charger", allow_movement: bool = False, max_hops: int = 12, segment_cm: float = 40.0, duration_seconds: int = 120) -> dict:
+    """Traverse the topological place-graph to a goal place (default the charger),
+    relocalising at each node. Aborts and asks for help if it can't recognise the
+    next place after a few tries (drift never compounds across the route).
+
+    allow_movement=false => plan + report only (no driving)."""
+    global _last_topo_node, movement_grant
+    if not CONFIG.nav.topo_enabled:
+        return {"ok": False, "reason": "topo graph disabled (nav.topo_enabled=false)"}
+    route = topo_exec.plan_return(TOPO, _last_topo_node, goal)
+    if not route.get("ok"):
+        return {"ok": False, "reason": route.get("reason", "no route"), "route": route}
+    state = topo_exec.ReturnState(path=list(route["path"]), actions=list(route["actions"]))
+    if not allow_movement:
+        return {"ok": True, "moved": False, "route": route, "status": state.status(), "note": "plan only; set allow_movement=true (with armed motors + grant) to traverse"}
+
+    grant = MovementPermissionCommand(task=f"return-home:{goal}", allow_movement=True, duration_seconds=duration_seconds, max_linear=0.3, max_turn=0.65, notes="Pi-side topo route traversal")
+    movement_grant = grant.model_dump() | {"expires_at": time.time() + grant.duration_seconds, "active": True}
+    events.add(store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="return_home", label=grant.task, payload=movement_grant | {"goal": goal})))
+
+    log_steps: list[dict] = []
+    deadline = time.time() + duration_seconds
+    hops = 0
+    while not state.done and not state.aborted and hops < max_hops and time.time() < deadline:
+        hops += 1
+        action = state.current_action or {}
+        for kind, value in topo_exec.edge_motions(action.get("action", "forward"), float(action.get("heading_out", 0.0)), segment_cm=segment_cm):
+            if kind == "rotate" and abs(value) >= 1.0:
+                await rotate_step(RotateStepCommand(deg=max(-45.0, min(45.0, value)), require_permission=True))
+            elif kind == "forward":
+                await adaptive_forward_stride(value, chunk_cm=6.0, require_permission=True)
+        # Relocalise: fingerprint where we ended up and check against the expected node.
+        angles = sorted(set([float(a) for a in CONFIG.nav.cruise_side_angles] + [0.0]))
+        _, summary = await reactive_escape_scan(goal, angles)
+        sig = sonar_signature_from_summary(summary, angles)
+        rec = TOPO.recognize(sig, [], 0)
+        result = state.on_observed(rec.node_id)
+        if rec.node_id:
+            _last_topo_node = rec.node_id
+        log_steps.append({"hop": hops, "expected": state.expected_next, "observed": rec.node_id, "result": result, "status": state.status()})
+        if result == "advanced" and state.done:
+            break
+    await body.stop()
+    save_topo()
+    if state.aborted:
+        pip_enqueue_interrupt("high", f"I tried to get to {goal} but lost my way. Can you help me?", kind="rescue", payload={"route": route, "steps": log_steps})
+    return {"ok": True, "moved": True, "goal": goal, "done": state.done, "aborted": state.aborted, "route": route, "steps": log_steps, "status": state.status()}
 
 
 @app.post("/tasks/wall-follow")

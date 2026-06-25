@@ -62,6 +62,30 @@ def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def pan_angle_for(pan_deg: float) -> int:
+    """Map user pan (-80..80, 0=ahead) to a conservative servo angle (10..170)."""
+    return int(clamp(90 + pan_deg, 10, 170))
+
+
+def pan_pulse_us(pan_deg: float) -> int:
+    """Servo pulse (us) for the pan channel (PCA9685 ch8 = Freenove servo '0').
+
+    This channel uses the INVERTED pulse formula on the FNK0043 (`2500 - (angle+
+    error)/0.09`); tilt/ch9 uses `500 + ...`. Pure so the inversion is unit-tested.
+    """
+    return 2500 - int((pan_angle_for(pan_deg) + 10) / 0.09)
+
+
+def _duty_close(a: "WheelDuty", b: "WheelDuty", *, tol: int = 40) -> bool:
+    """True when two wheel-duty targets are within tol on every channel."""
+    return (
+        abs(a.left_upper - b.left_upper) <= tol
+        and abs(a.left_lower - b.left_lower) <= tol
+        and abs(a.right_upper - b.right_upper) <= tol
+        and abs(a.right_lower - b.right_lower) <= tol
+    )
+
+
 def drive_to_wheel_duty(command: DriveCommand, max_duty_cycle: float = 0.55) -> WheelDuty:
     """Convert normalized linear/turn command to Freenove 4-wheel duties.
 
@@ -173,6 +197,12 @@ class FreenoveHardware:
         lurch without adding closed-loop wheel odometry.
         """
         start = self.last_wheel_duty
+        # Skip the ramp when the target is essentially unchanged: continuous cruise
+        # re-issues the same duty every ~100ms, and ramping on every re-issue would
+        # keep Pip stuck in the ramp and never reach steady speed (audit MED-5).
+        if _duty_close(start, target):
+            self._apply_wheel_duty(target)
+            return target
         steps = max(1, int(steps))
         delay = max(0.0, ramp_ms / 1000.0 / steps)
         for idx in range(1, steps + 1):
@@ -199,10 +229,9 @@ class FreenoveHardware:
         self.last_wheel_duty = zero
 
     def set_turret(self, command: TurretCommand) -> None:
-        # Map -80..80 user pan to a conservative servo angle around center.
-        angle = int(clamp(90 + command.pan_deg, 10, 170))
-        pulse = 500 + int(angle / 0.09)
-        self.pwm.set_servo_pulse_us(self.config.turret.pan_channel, pulse)
+        # Pan uses the INVERTED FNK0043 formula (see pan_pulse_us); the old non-
+        # inverted form mirrored every pan, flipping the world model VFH/cruise act on.
+        self.pwm.set_servo_pulse_us(self.config.turret.pan_channel, pan_pulse_us(command.pan_deg))
 
     def close(self) -> None:
         self.stop()

@@ -62,12 +62,11 @@ class ADS7830:
 
 
 def estimate_battery_percent(voltage: float | None) -> float | None:
-    if voltage is None:
-        return None
-    # Conservative 2S Li-ion estimate for the Freenove 2x18650 pack.
-    low = 6.4
-    high = 8.4
-    return round(max(0.0, min(1.0, (voltage - low) / (high - low))) * 100, 1)
+    # Backed by the real 2S Li-ion resting curve now (see rover/battery.py), instead
+    # of the old linear 6.4-8.4V guess that misread the flat middle of the curve.
+    from .battery import voltage_to_soc
+
+    return voltage_to_soc(voltage)
 
 
 class FreenoveSensorReader:
@@ -77,9 +76,15 @@ class FreenoveSensorReader:
         adc_voltage_coefficient: float = 5.2,
         bumper_left_pin: int | None = None,
         bumper_right_pin: int | None = None,
+        pcb_version: int = 2,
     ) -> None:
+        from .battery import adc_pair
+
         self.front_stop_distance_cm = front_stop_distance_cm
-        self.adc_voltage_coefficient = adc_voltage_coefficient
+        self.pcb_version = pcb_version
+        # Bind the ADC (coeff, divider-multiplier) as a PCB-version pair so a v1
+        # board cannot be silently misread by ~33% (audit HIGH-2).
+        self.adc_voltage_coefficient, self.adc_multiplier = adc_pair(pcb_version)
         self.bumper_left_pin = bumper_left_pin
         self.bumper_right_pin = bumper_right_pin
 
@@ -88,8 +93,12 @@ class FreenoveSensorReader:
         pins = {"left": 14, "center": 15, "right": 23}
         devices = {}
         try:
-            # Pull-up matched the user's focused test; sensors are optional.
-            devices = {name: DigitalInputDevice(pin, pull_up=True) for name, pin in pins.items()}
+            # The FNK0043 line module is an active push-pull LM393 comparator output
+            # (the vendor reads it with gpiozero.LineSensor, no internal pull). Forcing
+            # pull_up=True fought that driven output and biased a floating/disconnected
+            # channel to 1 -> false line/cliff (audit HIGH-3). Use no internal pull;
+            # active_state=True so value==1 means "over line / no-reflection".
+            devices = {name: DigitalInputDevice(pin, pull_up=None, active_state=True) for name, pin in pins.items()}
             return {name: int(device.value) for name, device in devices.items()}
         finally:
             for device in devices.values():
@@ -123,7 +132,12 @@ class FreenoveSensorReader:
         count = max(1, int(samples))
         with _DISTANCE_SENSOR_LOCK:
             if _DISTANCE_SENSOR is None:
-                _DISTANCE_SENSOR = DistanceSensor(echo=22, trigger=27, max_distance=3.0)
+                # queue_len=1, partial=True: gpiozero's DistanceSensor otherwise
+                # background-polls and `.distance` returns a value smoothed over
+                # queue_len(=9) reads, so a tight median-of-N loop just re-reads the
+                # SAME averaged buffer (audit HIGH-4). queue_len=1 gives true single
+                # pings so the median and the fail-closed negative filter actually work.
+                _DISTANCE_SENSOR = DistanceSensor(echo=22, trigger=27, max_distance=3.0, queue_len=1, partial=True)
                 time.sleep(0.08)
             readings: list[float] = []
             for index in range(count):
@@ -186,7 +200,8 @@ class FreenoveSensorReader:
             # Return None (not a fake 0.0V/0%) when the channel is missing, so a
             # read glitch cannot masquerade as a critically low battery.
             raw_power = adc.get(2)
-            battery_voltage = round(raw_power * 2, 2) if raw_power is not None else None
+            # Apply the PCB-version-paired divider multiplier (x2 for v2, x3 for v1).
+            battery_voltage = round(raw_power * self.adc_multiplier, 2) if raw_power is not None else None
             out["battery_voltage"] = battery_voltage
             out["battery_percent"] = estimate_battery_percent(battery_voltage)
         except Exception as exc:  # pragma: no cover - hardware-dependent
@@ -513,6 +528,15 @@ class FreenoveRGBStrip:
                 bits.extend(self._encode_byte(byte))
         self.spi.xfer2(self._bits_to_bytes(bits) + [0] * 80)
 
+    def set_pixels(self, pixels: list[tuple[int, int, int]]) -> None:
+        """Set each LED independently (for directional / patterned expression)."""
+        bits: list[int] = []
+        for i in range(self.count):
+            r, g, b = pixels[i] if i < len(pixels) else (0, 0, 0)
+            for byte in self._ordered(r, g, b):
+                bits.extend(self._encode_byte(byte))
+        self.spi.xfer2(self._bits_to_bytes(bits) + [0] * 80)
+
     def close(self) -> None:
         self.spi.close()
 
@@ -524,6 +548,15 @@ def set_rgb(red: int, green: int, blue: int, brightness: int = FREENOVE_RGB_BRIG
     finally:
         strip.close()
     return {"ok": True, "count": count, "red": red, "green": green, "blue": blue, "brightness": brightness, "order": FREENOVE_RGB_ORDER}
+
+
+def set_rgb_pixels(pixels: list[tuple[int, int, int]], brightness: int = FREENOVE_RGB_BRIGHTNESS, count: int = FREENOVE_RGB_LED_COUNT) -> dict[str, Any]:
+    strip = FreenoveRGBStrip(count=count, brightness=brightness)
+    try:
+        strip.set_pixels(pixels)
+    finally:
+        strip.close()
+    return {"ok": True, "count": count, "pixels": len(pixels), "brightness": brightness, "order": FREENOVE_RGB_ORDER}
 
 
 def rgb_ready() -> bool:

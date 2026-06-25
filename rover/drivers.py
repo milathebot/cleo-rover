@@ -171,6 +171,7 @@ class RoverBody:
             adc_voltage_coefficient=self.config.sensors.adc_voltage_coefficient,
             bumper_left_pin=self.config.sensors.bumper_left_pin,
             bumper_right_pin=self.config.sensors.bumper_right_pin,
+            pcb_version=self.config.sensors.pcb_version,
         ).snapshot()
 
     def front_distance_median(self, samples: int | None = None) -> float | None:
@@ -181,6 +182,7 @@ class RoverBody:
         return FreenoveSensorReader(
             front_stop_distance_cm=self.config.safety.front_stop_distance_cm,
             adc_voltage_coefficient=self.config.sensors.adc_voltage_coefficient,
+            pcb_version=self.config.sensors.pcb_version,
         ).read_front_distance_cm(samples=count)
 
     async def _check_forward_reflex(self, command: DriveCommand, *, source: str) -> bool:
@@ -362,6 +364,7 @@ class RoverBody:
                 adc_voltage_coefficient=self.config.sensors.adc_voltage_coefficient,
                 bumper_left_pin=self.config.sensors.bumper_left_pin,
                 bumper_right_pin=self.config.sensors.bumper_right_pin,
+                pcb_version=self.config.sensors.pcb_version,
             ).snapshot()
 
         return {

@@ -242,6 +242,11 @@ POST /memory/consolidate
 GET  /memory/facts
 POST /vision/flow
 POST /tasks/wall-follow
+POST /pip/cruise
+GET  /battery
+GET  /calibration
+GET  /pip/rgb-affect
+POST /tasks/return-home
 ```
 
 ## Autonomy phases implemented
