@@ -41,6 +41,27 @@ def should_reflex_stop(command: DriveCommand, sensors: dict[str, Any], *, thresh
     return False, None
 
 
+def should_panned_forward_stop(command: DriveCommand, pan_deg: Any, *, guard_deg: float = 5.0) -> tuple[bool, str | None]:
+    """Bearing guard: refuse forward motion while the turret sonar is panned away.
+
+    The forward ultrasonic reflex trusts the *live* range reading, but the single
+    sonar is turret-mounted. If the turret is panned to a side (e.g. mid-sweep)
+    and returns a clear *side* reading, that reading would otherwise satisfy the
+    reflex and let Pip drive forward into a wall the sonar is not pointed at. So
+    when driving forward, require the turret to be within +/- guard_deg of centre;
+    fail CLOSED if the pan angle is unknown.
+    """
+    if command.linear <= 0:
+        return False, None
+    try:
+        pan = abs(float(pan_deg))
+    except (TypeError, ValueError):
+        return True, "forward drive with unknown turret bearing; failing closed"
+    if pan > guard_deg:
+        return True, f"forward drive while turret panned {pan:.0f}deg (> {guard_deg:.0f}deg); sonar not looking ahead"
+    return False, None
+
+
 def should_cliff_stop(sensors: dict[str, Any], *, enabled: bool, drop_value: int) -> tuple[bool, str | None]:
     """Floor-drop reflex from the downward IR line sensors.
 
@@ -165,6 +186,24 @@ class RoverBody:
     async def _check_forward_reflex(self, command: DriveCommand, *, source: str) -> bool:
         if not self.hardware or not self.motors_armed or command.linear <= 0:
             return False
+        # Bearing guard FIRST: a forward pulse while the turret is panned away is a
+        # stop regardless of the (side-pointed) distance reading. This closes a
+        # real hole -- the reflex otherwise trusts a clear side reading as "ahead".
+        panned, panned_reason = should_panned_forward_stop(
+            command, self.state.turret.pan_deg, guard_deg=float(self.config.safety.forward_cone_guard_deg)
+        )
+        if panned:
+            self.state.last_reflex_stop = {
+                "reason": panned_reason,
+                "kind": "panned_forward",
+                "pan_deg": getattr(self.state.turret, "pan_deg", None),
+                "threshold_cm": self._reflex_threshold_cm(),
+                "drive": command.model_dump(),
+                "source": source,
+                "time": time.time(),
+            }
+            await self.stop()
+            return True
         sensors = self._sensor_snapshot()
         # Fail CLOSED on an unknown forward range: should_reflex_stop returns
         # (False, None) when distance is None, which would otherwise let a forward

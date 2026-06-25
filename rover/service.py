@@ -36,6 +36,8 @@ from . import social
 from . import stuck
 from . import vfh as vfh_mod
 from . import consolidation as consolidation_mod
+from . import perception as perception_mod
+from . import cruise as cruise_mod
 from .occupancy import OccupancyGrid, grid_config_from
 from .topo_map import TopoMap
 from .wall_follow import wall_follow_config_from, wall_follow_step, ACTION_INSIDE_CORNER
@@ -115,6 +117,13 @@ TOPO = (
 )
 _last_topo_node: str | None = None
 _heartbeat_count = 0
+# Continuous-motion ("cruise") singletons. Tasks only auto-start on hardware with
+# nav.continuous_motion_enabled; the dry-run endpoint works anywhere.
+CRUISE_PARAMS = cruise_mod.cruise_params_from(CONFIG.nav, CONFIG.odometry, CONFIG.safety)
+CRUISE_SNAPSHOT = perception_mod.PolarSnapshot()
+_cruise_stop_event: Any = None
+_perception_task_handle: Any = None
+_cruise_task_handle: Any = None
 
 
 def save_topo() -> None:
@@ -1790,6 +1799,94 @@ def vision_flow() -> dict:
         "note": "Optical flow confirms stalls + looming on hardware; advisory only, never relaxes a reflex.",
         "backends": vision_service.vision_backends(),
     }
+
+
+def _cruise_dry_run_decision(summary: dict) -> dict:
+    """Build a PolarSnapshot from a scan summary and compute the would-be cruise
+    decision WITHOUT moving. Shows what continuous motion would choose right now."""
+    now = time.time()
+    snap = perception_mod.PolarSnapshot()
+    for b, d in sweep_samples_from_summary(summary):
+        snap.update(b, d, now)
+    steer = vfh_mod.steer(snap.vfh_samples(now), cfg=VFH_CFG, target_bearing_deg=0.0)
+    fwd_min, fwd_age = snap.fwd_cone(now, half_deg=CRUISE_PARAMS.forward_cone_deg, max_age_ms=CRUISE_PARAMS.fwd_stale_ms)
+    decision = cruise_mod.steer_to_command(
+        chosen_bearing_deg=steer.chosen_bearing_deg,
+        blocked=steer.blocked,
+        fwd_min_cm=fwd_min,
+        fwd_worst_age_ms=fwd_age,
+        grant_active=True,  # reveal the drive decision as if a grant existed
+        pan_deg=0.0,
+        params=CRUISE_PARAMS,
+    )
+    return {
+        "action": decision.action,
+        "linear": decision.linear,
+        "turn": decision.turn,
+        "stop": decision.stop,
+        "cornered": decision.cornered,
+        "reason": decision.reason,
+        "speed_cap_linear": round(cruise_mod.cruise_speed_cap(CRUISE_PARAMS), 3),
+        "speed_cap_cm_s": round(cruise_mod.cruise_speed_cap_cm_s(CRUISE_PARAMS), 1),
+        "forward_min_cm": fwd_min,
+        "steering": {"chosen_bearing_deg": steer.chosen_bearing_deg, "blocked": steer.blocked},
+    }
+
+
+@app.post("/pip/cruise")
+async def pip_cruise(on: bool = False, dry_run: bool = True, zone: str = "cruise") -> dict:
+    """Continuous smooth-motion control.
+
+    - dry_run (default): sweep once, show the cruise decision Pip WOULD make now
+      (no movement) -- safe everywhere, the way to validate the policy on the floor.
+    - on=true: start the perception + cruise tasks (requires
+      nav.continuous_motion_enabled AND hardware AND a movement grant). on=false: stop.
+
+    Movement still flows through grant + armed motors + the authoritative reflex/
+    bearing guard; cruise can only choose among safe motions, never relax a stop.
+    """
+    global _cruise_stop_event, _perception_task_handle, _cruise_task_handle
+    if not on and not dry_run:
+        # explicit stop
+        if _cruise_stop_event is not None:
+            _cruise_stop_event.set()
+        await body.stop()
+        return {"ok": True, "cruising": False, "stopped": True}
+
+    if dry_run or not on:
+        angles = sorted(set([float(a) for a in CONFIG.nav.cruise_side_angles] + [0.0]))
+        scan, summary = await reactive_escape_scan(zone, angles)
+        return {"ok": True, "dry_run": True, "moved": False, "decision": _cruise_dry_run_decision(summary), "advisory": "dry-run only; no movement. Flip nav.continuous_motion_enabled + grant + on=true on hardware to cruise."}
+
+    # on=true live path (hardware + flag + grant gated)
+    if not CONFIG.nav.continuous_motion_enabled:
+        return {"ok": False, "reason": "continuous motion disabled (nav.continuous_motion_enabled=false)"}
+    if body.mode != "hardware":
+        return {"ok": False, "reason": "cruise tasks only start on hardware; use dry_run in sim"}
+    if _cruise_task_handle is not None and not _cruise_task_handle.done():
+        return {"ok": True, "cruising": True, "note": "already cruising"}
+    _cruise_stop_event = asyncio.Event()
+
+    def _clamp_pan(a: float) -> float:
+        return max(CONFIG.turret.pan_min_deg, min(CONFIG.turret.pan_max_deg, float(a)))
+
+    def _grant_active() -> bool:
+        g = active_movement_grant()
+        return bool(g and g.get("active"))
+
+    _perception_task_handle = asyncio.create_task(
+        perception_mod.perception_task(
+            body, CRUISE_SNAPSHOT, side_angles=list(CONFIG.nav.cruise_side_angles),
+            settle_ms=CONFIG.nav.weave_settle_ms, clamp_pan=_clamp_pan, now_fn=time.monotonic, stop_event=_cruise_stop_event,
+        )
+    )
+    _cruise_task_handle = asyncio.create_task(
+        cruise_mod.cruise_task(
+            body, CRUISE_SNAPSHOT, vfh_cfg=VFH_CFG, params=CRUISE_PARAMS,
+            grant_active_fn=_grant_active, guarded_drive=guarded_drive, now_fn=time.monotonic, stop_event=_cruise_stop_event,
+        )
+    )
+    return {"ok": True, "cruising": True, "speed_cap_linear": round(cruise_mod.cruise_speed_cap(CRUISE_PARAMS), 3)}
 
 
 @app.post("/tasks/wall-follow")

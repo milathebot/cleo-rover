@@ -104,6 +104,10 @@ class SafetyConfig(BaseModel):
     # Digital line-sensor value that means "no reflection / no floor" (edge/drop).
     # Polarity is hardware-specific; verify with `cleo-rover sensors` over a real edge.
     line_drop_value: int = 1
+    # Bearing guard: forward motion is refused (reflex stop) while the turret sonar
+    # is panned more than this off centre, so a clear *side* reading can never be
+    # mistaken for a clear path ahead. Underpins safe continuous motion.
+    forward_cone_guard_deg: float = Field(default=5.0, ge=1.0, le=45.0)
     bench_safe_no_motors: bool = True
 
 
@@ -234,6 +238,24 @@ class NavConfig(BaseModel):
     flow_move_thresh_px: float = Field(default=1.2, ge=0.1, le=20.0)
     flow_min_tracks: int = Field(default=8, ge=3, le=100)
     flow_stall_hysteresis: int = Field(default=3, ge=1, le=10)
+
+    # --- continuous ("cruise") motion: smooth, non-stop driving ---
+    # Master flag OFF by default; the wheels only cruise after the coast distance is
+    # calibrated on hardware and this is flipped on (see the Tier 3 / cruise handover).
+    continuous_motion_enabled: bool = False
+    cruise_max_linear: float = Field(default=0.20, ge=0.0, le=0.5)  # normalized duty cap (~today's crawl)
+    cruise_side_angles: list[float] = Field(default_factory=lambda: [-20, 20, -45, 45, -70, 70], max_length=12)
+    forward_cone_deg: float = Field(default=20.0, ge=5.0, le=60.0)
+    weave_settle_ms: float = Field(default=90.0, ge=30.0, le=400.0)
+    ping_latency_ms: float = Field(default=50.0, ge=5.0, le=200.0)
+    fwd_stale_ms: float = Field(default=700.0, ge=150.0, le=3000.0)
+    slowdown_start_cm: float = Field(default=60.0, ge=20.0, le=200.0)
+    cruise_coast_cm: float = Field(default=8.0, ge=0.0, le=60.0)  # measured PWM-cut coast (calibrate on HW)
+    cruise_margin_cm: float = Field(default=4.0, ge=0.0, le=40.0)
+    cruise_react_ms: float = Field(default=70.0, ge=10.0, le=400.0)
+    cruise_max_turn: float = Field(default=0.5, ge=0.1, le=1.0)
+    cruise_cornered_confirm: int = Field(default=2, ge=1, le=6)
+    cruise_pulse_ms: int = Field(default=200, ge=80, le=600)
 
 
 class PersonalityConfig(BaseModel):

@@ -133,6 +133,56 @@ landmark becomes a fact).
    make them *relax* a guard, only add caution (`vision_block`, looming, stall).
 4. Topo/consolidation/`/nav/plan` are read-only or non-motor; they never drive.
 
+## Continuous ("cruise") motion — flow instead of scan→stop→move→scan
+
+The old loops are stop-and-go: pan the single turret sonar across angles, sleep,
+recenter, then one short crawl pulse, repeat. Cruise decouples sensing from motion
+so Pip flows and only stops when something is genuinely in the way.
+
+**Architecture (producer/consumer, on the existing asyncio loop, no locks):**
+- `rover/perception.py` — `perception_task` runs a **forward-biased weave**
+  (`weave_schedule`: 0° on every other slot) and writes each ping into a shared
+  `PolarSnapshot` (latest distance per bearing + timestamp).
+- `rover/cruise.py` — `cruise_task` reads the snapshot, runs `vfh.steer`, and calls
+  the pure `steer_to_command` to emit a continuous (linear, turn) or a stop, then
+  re-issues a short pulse (bounded by the watchdog deadline).
+
+**The one Tier-1 change — the bearing guard** (`drivers.should_panned_forward_stop`,
+wired into `_check_forward_reflex`): forward motion is refused whenever the turret
+is panned >`safety.forward_cone_guard_deg` (5°) off centre, so a clear *side*
+reading can never be mistaken for a clear path ahead. This **closes a real latent
+hole in the old stop-and-go code too**, and is the floor the whole cruise design
+leans on. Fail-closed on unknown bearing. Verified by `test_reflex_safety.py`.
+
+**What still stops Pip (unchanged authorities):** ultrasonic/cliff/bumper reflex,
+the bearing guard, watchdog deadline, grant expiry, owner stop. Cruise adds two
+*advisory* stops (cornered = VFH finds no gap, with hysteresis; forward range
+stale). VFH/optical-flow only **slow or steer** — never authorize motion, never
+relax a reflex.
+
+**The speed cap is the single source of truth** (`cruise.cruise_speed_cap`): a
+braking inequality `v·(T_forward+T_react) + coast + margin ≤ reflex_hard_cm`
+guarantees Pip can always stop within the reflex distance given the ping cadence.
+The policy never emits above it; `test_cruise.py` asserts the inequality holds.
+
+**Enable order (supervised):**
+1. **Phase 0 — calibrate coast on HW.** Drive short pulses at the cap, measure how
+   far Pip coasts after PWM cut, set `nav.cruise_coast_cm` (+ `cruise_margin_cm`).
+   *Nothing cruises until this is measured.*
+2. **Phase 1 is already shipped:** the bearing guard is live in both old and new
+   paths (strictly safer; default behaviour otherwise unchanged).
+3. **Dry-run anywhere:** `POST /pip/cruise?dry_run=true` sweeps once and returns the
+   cruise decision Pip *would* make (no movement) + the speed cap. Use this on the
+   floor to validate the policy before any wheels move.
+4. **Go live (HW, supervised, hand on stop):** set `nav.continuous_motion_enabled=true`,
+   grant movement, `POST /pip/cruise?on=true&dry_run=false`. Start at the default
+   `cruise_max_linear=0.20` (today's crawl speed); only raise it as far as the
+   measured coast + `cruise_speed_cap` allow.
+
+Config: all under `nav.*` (`continuous_motion_enabled` default OFF). Tests:
+`test_perception.py`, `test_cruise.py`, cruise cases in `test_nav_endpoints.py`,
+bearing guard in `test_reflex_safety.py`.
+
 ## Known follow-ups (tracked, not blockers)
 - Feed a future LiDAR into the same `OccupancyGrid` ISM + `vfh.steer` (drop-in).
 - Tangent-Bug wrapper around VFH for "go to remembered landmark around an obstacle."

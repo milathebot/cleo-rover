@@ -64,3 +64,20 @@ def test_vision_flow_advisory_unavailable_in_sim():
     r = client.post("/vision/flow").json()
     assert r["ok"] is True
     assert r["available"] is False  # no OpenCV + live camera in sim
+
+
+def test_cruise_dry_run_returns_decision_without_moving():
+    r = client.post("/pip/cruise", params={"dry_run": True}).json()
+    assert r["ok"] is True
+    assert r["moved"] is False
+    d = r["decision"]
+    assert d["action"] in ("drive", "stop")
+    assert d["speed_cap_linear"] <= 0.20 + 1e-9
+    assert "speed_cap_cm_s" in d
+
+
+def test_cruise_live_refused_when_disabled():
+    r = client.post("/pip/cruise", params={"on": True, "dry_run": False}).json()
+    # Default config has continuous_motion_enabled=false (and sim mode).
+    assert r["ok"] is False
+    assert "disabled" in r["reason"] or "hardware" in r["reason"]

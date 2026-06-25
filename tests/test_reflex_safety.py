@@ -10,8 +10,8 @@ from __future__ import annotations
 import asyncio
 
 from rover.config import RoverConfig
-from rover.drivers import RoverBody, should_bump_stop, should_cliff_stop
-from rover.models import DriveCommand
+from rover.drivers import RoverBody, should_bump_stop, should_cliff_stop, should_panned_forward_stop
+from rover.models import DriveCommand, TurretCommand
 
 
 def test_cliff_and_bump_disabled_by_default():
@@ -93,6 +93,45 @@ def test_forward_reflex_fails_closed_on_unknown_range(monkeypatch):
     assert (r1, r2) == (False, False)
     assert r3 is True
     assert body.state.last_reflex_stop["kind"] == "range_unknown"
+    assert body.state.stopped is True
+
+
+def test_panned_forward_guard_pure():
+    fwd = DriveCommand(linear=0.3, turn=0, duration_ms=200)
+    turning = DriveCommand(linear=0.0, turn=0.5, duration_ms=200)
+    # Centered turret -> forward allowed.
+    assert should_panned_forward_stop(fwd, 0.0)[0] is False
+    assert should_panned_forward_stop(fwd, 4.0)[0] is False
+    # Panned away while driving forward -> stop.
+    triggered, reason = should_panned_forward_stop(fwd, 30.0)
+    assert triggered is True and "panned" in reason
+    # Unknown bearing fails closed.
+    assert should_panned_forward_stop(fwd, None)[0] is True
+    # Turning in place (no forward motion) is fine at any pan.
+    assert should_panned_forward_stop(turning, 60.0)[0] is False
+
+
+def test_forward_reflex_stops_when_turret_panned_even_with_clear_side(monkeypatch):
+    import rover.drivers as drivers
+
+    class DummyHardware:
+        def __init__(self, config):
+            pass
+
+        def stop(self):
+            pass
+
+        def drive(self, command):
+            pass
+
+    monkeypatch.setattr(drivers, "FreenoveHardware", DummyHardware)
+    body = RoverBody(mode="hardware", config=RoverConfig.model_validate({"safety": {"bench_safe_no_motors": False}}))
+    # Turret panned to a side; the (side) reading is wide open at 200cm.
+    body.state.turret = TurretCommand(pan_deg=60.0)
+    monkeypatch.setattr(body, "_sensor_snapshot", lambda: {"front_distance_cm": 200.0, "line_sensors": None, "bumpers": None})
+    fired = asyncio.run(body._check_forward_reflex(DriveCommand(linear=0.3, turn=0, duration_ms=200), source="test"))
+    assert fired is True
+    assert body.state.last_reflex_stop["kind"] == "panned_forward"
     assert body.state.stopped is True
 
 
