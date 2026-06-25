@@ -629,9 +629,11 @@ async def presence_remember_room(zone: str = "room") -> dict:
 
 @app.post("/movement/move-step")
 async def move_step(command: MoveStepCommand) -> dict:
-    # Tuned from real Pip floor tests: 0.28/180ms buzzed; 4cm with max_linear 0.40 worked.
-    linear = 0.34 if command.forward_cm >= 0 else -0.30
-    duration = int(min(450, max(220, abs(command.forward_cm) * 55)))
+    # Tuned from real Pip floor tests. The first calibration moved cleanly but
+    # under-travelled badly: requested 24cm produced only a few cm of motion.
+    # Keep the duty below the floor-cautious grant, but give each cm more time.
+    linear = 0.38 if command.forward_cm >= 0 else -0.32
+    duration = int(min(650, max(260, abs(command.forward_cm) * 95)))
     result = await guarded_drive(DriveCommand(linear=linear, turn=0, duration_ms=duration), require_permission=command.require_permission)
     result["step"] = command.model_dump()
     return result

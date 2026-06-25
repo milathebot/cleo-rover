@@ -60,8 +60,8 @@
     "brightness": 18
   },
   "safety": {
-    "max_drive_duration_ms": 450,
-    "default_drive_duration_ms": 220,
+    "max_drive_duration_ms": 650,
+    "default_drive_duration_ms": 260,
     "heartbeat_timeout_ms": 1500,
     "front_stop_distance_cm": 30,
     "bench_safe_no_motors": false
