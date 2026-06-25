@@ -190,7 +190,11 @@ def main(argv: list[str] | None = None) -> int:
     hallway_scout.add_argument("--cycles", type=int, default=8)
     hallway_scout.add_argument("--vision-every", type=int, default=3)
     hallway_scout.add_argument("--no-scan-before-move", action="store_true", help="Skip range scan before each forward step; not recommended near doorways")
-    hallway_scout.add_argument("--step-cm", type=float, default=4.0)
+    hallway_scout.add_argument("--fixed-step", action="store_true", help="Use --step-cm exactly instead of adaptive clearance-based stride")
+    hallway_scout.add_argument("--step-cm", type=float, default=4.0, help="Fixed step size, or fallback when adaptive is disabled")
+    hallway_scout.add_argument("--min-step-cm", type=float, default=2.0)
+    hallway_scout.add_argument("--max-step-cm", type=float, default=24.0)
+    hallway_scout.add_argument("--stride-chunk-cm", type=float, default=6.0, help="Max open-loop chunk inside an adaptive stride; sensors are checked between chunks")
     hallway_scout.add_argument("--clear-cm", type=float, default=75.0)
     hallway_scout.add_argument("--blocked-cm", type=float, default=55.0)
     hallway_scout.add_argument("--pause-seconds", type=float, default=1.0)
@@ -421,7 +425,11 @@ def main(argv: list[str] | None = None) -> int:
                 "cycles": args.cycles,
                 "vision_every": args.vision_every,
                 "scan_before_move": not args.no_scan_before_move,
+                "adaptive_step": not args.fixed_step,
                 "step_cm": args.step_cm,
+                "min_step_cm": args.min_step_cm,
+                "max_step_cm": args.max_step_cm,
+                "stride_chunk_cm": args.stride_chunk_cm,
                 "clear_cm": args.clear_cm,
                 "blocked_cm": args.blocked_cm,
                 "pause_seconds": args.pause_seconds,

@@ -624,6 +624,59 @@ async def move_step(command: MoveStepCommand) -> dict:
     return result
 
 
+def adaptive_forward_step_cm(
+    *,
+    center_distance_cm: float | None,
+    front_distance_cm: float | None,
+    blocked_cm: float,
+    min_step_cm: float,
+    max_step_cm: float,
+    fallback_step_cm: float,
+) -> float:
+    """Choose a route-level stride from clearance, while actual movement stays chunked.
+
+    This is Pip's general navigation rule: use larger strides in open hallway, but
+    shrink to tiny nudges near doorways/obstacles. It does not trust odometry.
+    """
+    readings = [v for v in (center_distance_cm, front_distance_cm) if v is not None]
+    if not readings:
+        return max(min_step_cm, min(fallback_step_cm, max_step_cm))
+    clearance = max(0.0, min(readings) - blocked_cm)
+    # Use less than half of measured spare clearance. At 150cm with blocked=45cm,
+    # this asks for about 47cm, then max_step_cm caps the stride for supervision.
+    planned = clearance * 0.45
+    return round(max(min_step_cm, min(max_step_cm, planned)), 1)
+
+
+async def adaptive_forward_stride(total_cm: float, *, chunk_cm: float, require_permission: bool = True, brake_cm: float = 45.0) -> dict:
+    """Move a planned stride as several short open-loop chunks with sensor checks.
+
+    We still stop and re-read range between chunks, so a 24-50cm high-level stride
+    is never one blind motor command.
+    """
+    remaining = max(0.0, float(total_cm))
+    chunk_limit = max(1.0, min(10.0, float(chunk_cm)))
+    chunks: list[dict[str, Any]] = []
+    travelled = 0.0
+    while remaining > 0.1:
+        sensors_now = body.sensors()
+        front = sensors_now.get("front_distance_cm")
+        front_value = float(front) if front is not None else None
+        if front_value is None or front_value < brake_cm:
+            await body.stop()
+            return {"ok": False, "kind": "adaptive-stride", "reason": "front blocked before chunk", "front_distance_cm": front_value, "planned_cm": total_cm, "travelled_cm": round(travelled, 1), "chunks": chunks}
+        this_chunk = min(chunk_limit, remaining)
+        move = await move_step(MoveStepCommand(forward_cm=this_chunk, require_permission=require_permission))
+        chunks.append({"requested_cm": round(this_chunk, 1), "front_before_cm": front_value, "result": move})
+        await asyncio.sleep(0.15)
+        await body.stop()
+        if not move.get("ok"):
+            return {"ok": False, "kind": "adaptive-stride", "reason": "chunk move failed", "planned_cm": total_cm, "travelled_cm": round(travelled, 1), "chunks": chunks}
+        travelled += this_chunk
+        remaining -= this_chunk
+    return {"ok": True, "kind": "adaptive-stride", "planned_cm": round(total_cm, 1), "travelled_cm": round(travelled, 1), "chunk_cm": chunk_limit, "chunks": chunks}
+
+
 @app.post("/movement/rotate-step")
 async def rotate_step(command: RotateStepCommand) -> dict:
     # Tuned from real Pip floor tests: direct turn=0.65 for 300ms worked cleanly.
@@ -1621,8 +1674,18 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
             action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"better opening at {best_bearing:.0f}deg")
         else:
             blocked_streak = 0
-            move = await move_step(MoveStepCommand(forward_cm=command.step_cm, require_permission=True))
-            action = {"kind": "move-step", "result": move}
+            planned_step = command.step_cm
+            if command.adaptive_step:
+                planned_step = adaptive_forward_step_cm(
+                    center_distance_cm=center_distance,
+                    front_distance_cm=front_value,
+                    blocked_cm=command.blocked_cm,
+                    min_step_cm=command.min_step_cm,
+                    max_step_cm=command.max_step_cm,
+                    fallback_step_cm=command.step_cm,
+                )
+            move = await adaptive_forward_stride(planned_step, chunk_cm=command.stride_chunk_cm, require_permission=True, brake_cm=command.blocked_cm)
+            action = {"kind": "adaptive-move" if command.adaptive_step else "move-step", "planned_step_cm": planned_step, "result": move}
 
         action["cycle"] = cycle
         action["front_distance_cm"] = front_value
@@ -1653,7 +1716,7 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
         "complete_event": done.model_dump(),
         "summary": summary,
         "final_front_distance_cm": final_sensors.get("front_distance_cm"),
-        "safety": "Short proven pulses, stop after every action, ultrasonic checks and range-scan before movement, scan+turn when center is not clear, camera/Hermes context at configured intervals.",
+        "safety": "Adaptive route strides executed as short chunks, stop after every chunk, ultrasonic checks and range-scan before movement, scan+turn when center is not clear, camera/Hermes context at configured intervals.",
         "actions": compact_plan(actions) if command.compact else actions,
     }
 
