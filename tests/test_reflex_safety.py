@@ -69,6 +69,33 @@ def test_forward_reflex_fires_on_cliff_when_enabled(monkeypatch):
     assert body.state.stopped is True
 
 
+def test_forward_reflex_fails_closed_on_unknown_range(monkeypatch):
+    import rover.drivers as drivers
+
+    class DummyHardware:
+        def __init__(self, config):
+            pass
+
+        def stop(self):
+            pass
+
+        def drive(self, command):
+            pass
+
+    monkeypatch.setattr(drivers, "FreenoveHardware", DummyHardware)
+    body = RoverBody(mode="hardware", config=RoverConfig.model_validate({"safety": {"bench_safe_no_motors": False}}))
+    monkeypatch.setattr(body, "_sensor_snapshot", lambda: {"front_distance_cm": None, "line_sensors": None, "bumpers": None})
+    cmd = DriveCommand(linear=0.3, turn=0, duration_ms=200)
+    # Tolerate brief dropouts, then fail CLOSED (default _max_none_range = 3).
+    r1 = asyncio.run(body._check_forward_reflex(cmd, source="t"))
+    r2 = asyncio.run(body._check_forward_reflex(cmd, source="t"))
+    r3 = asyncio.run(body._check_forward_reflex(cmd, source="t"))
+    assert (r1, r2) == (False, False)
+    assert r3 is True
+    assert body.state.last_reflex_stop["kind"] == "range_unknown"
+    assert body.state.stopped is True
+
+
 def test_forward_reflex_does_not_fire_on_normal_floor(monkeypatch):
     import rover.drivers as drivers
 

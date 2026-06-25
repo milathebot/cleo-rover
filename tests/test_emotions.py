@@ -18,10 +18,12 @@ def test_autonomy_heartbeat_refreshes_energy_from_battery(monkeypatch):
     assert data["feelings"]["energy"] >= 0.85
 
 
-def test_low_battery_drops_energy(monkeypatch):
+def test_low_battery_drops_energy_and_mood(monkeypatch):
     monkeypatch.setattr(service.body, "sensors", lambda: {"battery_percent": 12.0, "errors": {}})
     data = client.post("/autonomy/heartbeat").json()
     assert data["feelings"]["energy"] <= 0.2
+    # The idle tick in the same heartbeat must NOT reset the low-energy mood to calm.
+    assert data["feelings"]["mood"] in {"tired", "low_power"}
 
 
 def test_pip_state_exposes_unified_feelings():

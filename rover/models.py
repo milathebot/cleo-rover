@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ExpressionMode(str, Enum):
@@ -171,6 +171,14 @@ class HallwayScoutCommand(BaseModel):
     confirm_clear: int = Field(default=2, ge=1, le=6)
     # Avoid turret extremes that can clip Pip's shell; use ~85% of physical pan range.
     scan_angles: list[float] = Field(default_factory=lambda: [-60, -40, -20, 0, 20, 40, 60], max_length=9)
+
+    @model_validator(mode="after")
+    def _bands_ordered(self) -> "HallwayScoutCommand":
+        # Inverted/overlapping bands would let emergency subsume the creep band and
+        # make a doorway impossible to thread. Enforce emergency < blocked < clear.
+        if not (self.emergency_cm < self.blocked_cm < self.clear_cm):
+            raise ValueError(f"bands must satisfy emergency_cm < blocked_cm < clear_cm (got {self.emergency_cm}, {self.blocked_cm}, {self.clear_cm})")
+        return self
     pause_seconds: float = Field(default=1.0, ge=0.0, le=8.0)
     speak: bool = False
     compact: bool = True
@@ -193,6 +201,12 @@ class ReactiveExploreCommand(BaseModel):
     keep_searching_when_stuck: bool = True
     compact: bool = True
     notes: str | None = Field(default=None, max_length=240)
+
+    @model_validator(mode="after")
+    def _bands_ordered(self) -> "ReactiveExploreCommand":
+        if not (self.front_emergency_cm < self.front_stop_cm < self.front_clear_cm):
+            raise ValueError(f"bands must satisfy front_emergency_cm < front_stop_cm < front_clear_cm (got {self.front_emergency_cm}, {self.front_stop_cm}, {self.front_clear_cm})")
+        return self
 
 
 class LineFollowCommand(BaseModel):

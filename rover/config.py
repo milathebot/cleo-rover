@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -224,4 +225,15 @@ def default_config_path() -> Path:
 def load_config() -> RoverConfig:
     path = Path(os.getenv("CLEO_ROVER_CONFIG", str(default_config_path()))).expanduser()
     data = json.loads(path.read_text(encoding="utf-8"))
-    return RoverConfig.model_validate(data)
+    config = RoverConfig.model_validate(data)
+    # Warn (don't fail) if a profile that can arm motors ships without the
+    # downward-IR cliff reflex: the horizontal ultrasonic cannot see a stair/table
+    # edge. Enable safety.cliff_reflex_enabled after verifying line_drop_value on
+    # the real floor (see docs handover).
+    if not config.safety.bench_safe_no_motors and not config.safety.cliff_reflex_enabled:
+        logging.getLogger("cleo_rover").warning(
+            "Profile %s can arm motors (bench_safe_no_motors=false) but cliff_reflex_enabled=false: "
+            "no stair/edge protection. Verify line_drop_value polarity on hardware, then enable it.",
+            config.profile,
+        )
+    return config

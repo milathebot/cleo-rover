@@ -515,7 +515,9 @@ async def hearing_listen(text: str | None = None, seconds: float = 4.0) -> dict:
     if transcript is None:
         if body.mode != "hardware":
             return {"ok": True, "available": False, "reason": "mic capture only on hardware; pass ?text= to route an external transcript", "backends": voice_daemon.voice_backends()}
-        listen_result = voice_daemon.capture_and_transcribe(
+        # Mic capture + offline STT are blocking; run them off the event loop.
+        listen_result = await asyncio.to_thread(
+            voice_daemon.capture_and_transcribe,
             seconds=seconds,
             mic_device=CONFIG.voice.mic_device,
             rate=CONFIG.voice.sample_rate,
@@ -1413,12 +1415,13 @@ async def pip_command(command: PipCommand) -> dict:
         await body.stop()
         return {"ok": True, "handled": True, "action": "stop", "stopped": True}
     hermes_context = {"state": pip_public_state(), "brain": pip_brain_snapshot(compact=True)}
-    hermes = ask_hermes_as_pip(command.text, context=hermes_context)
+    # Blocking HTTP/TTS off the event loop so the reflex watchdog keeps running.
+    hermes = await asyncio.to_thread(ask_hermes_as_pip, command.text, context=hermes_context)
     if hermes.get("ok"):
         answer = str(hermes.get("answer") or "").strip()
         pip_state["mood"] = "happy" if any(word in answer.lower() for word in ["hi", "ready", "good", "happy"]) else "curious"
         await pip_set_expression(ExpressionMode.speaking, "pip", 0.55)
-        speech = speak_text(answer) if os.getenv("HERMES_PIP_SPEAK_RESPONSE", "true").lower() not in {"0", "false", "no"} else {"ok": True, "skipped": True}
+        speech = (await asyncio.to_thread(speak_text, answer)) if os.getenv("HERMES_PIP_SPEAK_RESPONSE", "true").lower() not in {"0", "false", "no"} else {"ok": True, "skipped": True}
         event = remember_event(RoverEvent(kind=RoverEventKind.speech, source="pip_hermes_bridge", label="pip reply", payload={"prompt": command.text, "answer": answer, "speech": speech, "usage": hermes.get("raw_usage")}))
         save_pip_runtime()
         return {"ok": True, "handled": True, "action": "hermes_reply", "answer": answer, "speech": speech, "event": event.model_dump(), "state": pip_public_state()}
@@ -1504,7 +1507,10 @@ async def mind_step(zone: str = "office") -> dict:
         result = await supervisor_intent(command)
         return {"ok": True, "source": "deterministic", "mind_used": False, "intent": command.model_dump(), "result": result}
 
-    mind_result = mind.ask_mind_for_intent(
+    # Offload the (blocking) LLM HTTP call to a thread so the event loop -- and the
+    # async safety watchdog/drive-monitor running on it -- keep ticking while we wait.
+    mind_result = await asyncio.to_thread(
+        mind.ask_mind_for_intent,
         packet=pip_brain_snapshot(compact=True),
         soul_prompt=pip_soul_prompt(),
         max_tokens=CONFIG.mind.max_tokens,
@@ -1645,6 +1651,10 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
     await body.stop()
     sensors_after = body.sensors()
     summary = plan_summary(plan)
+    # Self-rescue for direct callers too (not only via pip_life_tick): if Pip hit a
+    # fresh reflex or got cornered while exploring, raise an operator interrupt.
+    if summary.get("reflex_stop") or summary.get("corner_trap"):
+        pip_enqueue_interrupt("high", "I bumped into something I could not get around while exploring. Can you help?", kind="rescue", payload={"reactive": summary})
     response = {
         "ok": True,
         "task": movement_grant | {"zone": command.zone},

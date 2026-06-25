@@ -117,3 +117,19 @@ def test_consecutive_clear_marks_exit_phase():
     assert d.action == ACTION_ADVANCE
     assert d.clear_streak == 2
     assert d.phase == "exit"
+
+
+def test_doorway_bands_reject_inverted_order():
+    import pytest as _pytest
+    from rover.navigation import DoorwayBands
+    with _pytest.raises(ValueError):
+        DoorwayBands(emergency_cm=60.0, blocked_cm=30.0, clear_cm=35.0, reflex_hard_cm=30.0)
+
+
+def test_hallway_command_rejects_inverted_bands():
+    import pytest as _pytest
+    from rover.models import HallwayScoutCommand
+    with _pytest.raises(Exception):
+        HallwayScoutCommand(emergency_cm=60.0, blocked_cm=30.0, clear_cm=35.0)
+    # sane ordering is accepted
+    HallwayScoutCommand(emergency_cm=25.0, blocked_cm=42.0, clear_cm=75.0)

@@ -117,15 +117,24 @@ def capture_and_transcribe(
     capture = peripherals.capture_mic(seconds, device=mic_device, rate=rate)
     if not capture.get("ok"):
         return {"ok": False, "available": capture.get("available", False), "capture": capture, "text": None}
-    stt = transcribe_wav(capture["path"], backend=backend, model_path=model_path)
-    return {
-        "ok": bool(stt.get("ok")),
-        "available": stt.get("available", False),
-        "text": stt.get("text"),
-        "backend": stt.get("backend"),
-        "capture": capture,
-        "stt": stt,
-    }
+    try:
+        stt = transcribe_wav(capture["path"], backend=backend, model_path=model_path)
+        return {
+            "ok": bool(stt.get("ok")),
+            "available": stt.get("available", False),
+            "text": stt.get("text"),
+            "backend": stt.get("backend"),
+            "capture": capture,
+            "stt": stt,
+        }
+    finally:
+        # Avoid leaking /tmp on the always-on loop: drop the WAV + any whisper .txt.
+        try:
+            wav = Path(capture["path"])
+            wav.unlink(missing_ok=True)
+            wav.with_suffix(".txt").unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def route_command(base: str, text: str, *, source: str = "voice", timeout: float = 60.0) -> dict[str, Any]:
@@ -154,14 +163,16 @@ def run_wake_loop(base: str, *, seconds: float, mic_device: str | None, model_pa
             block, _ = stream.read(1280)
             scores = oww.predict(np.frombuffer(block, dtype=np.int16))
             if any(score >= threshold for score in scores.values()):
-                heard = capture_and_transcribe(seconds=seconds, mic_device=mic_device, model_path=model_path)
-                text = heard.get("text")
-                if text:
-                    try:
+                # A wedged mic/STT/route must never kill the always-on loop -> Pip
+                # would go silently deaf until restart. Catch everything and continue.
+                try:
+                    heard = capture_and_transcribe(seconds=seconds, mic_device=mic_device, model_path=model_path)
+                    text = heard.get("text")
+                    if text:
                         routed = route_command(base, text)
                         print(json.dumps({"ok": True, "heard": text, "action": routed.get("action")}))
-                    except Exception as exc:
-                        print(json.dumps({"ok": False, "heard": text, "error": repr(exc)}), file=sys.stderr)
+                except Exception as exc:
+                    print(json.dumps({"ok": False, "error": repr(exc)}), file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:

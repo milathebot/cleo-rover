@@ -6,9 +6,23 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from rover import mind
+from rover.models import BodyIntentCommand
 from rover.service import app
+from rover.supervisor import validate_intent
 
 client = TestClient(app)
+
+
+def test_move_step_rejected_when_turret_panned():
+    cmd = BodyIntentCommand(intent="move_step", params={"forward_cm": 8})
+    sensors = {"front_distance_cm": 200, "front_stop_distance_cm": 30}
+    movement = {"active": True}
+    panned = {"motors_armed": True, "safety": {"bench_safe_no_motors": False}, "turret": {"pan_deg": 40}}
+    ok, reason = validate_intent(cmd, status=panned, sensors=sensors, movement=movement)
+    assert ok is False and "turret" in reason
+    centered = {"motors_armed": True, "safety": {"bench_safe_no_motors": False}, "turret": {"pan_deg": 0}}
+    ok2, _ = validate_intent(cmd, status=centered, sensors=sensors, movement=movement)
+    assert ok2 is True
 
 
 def test_parse_intent_variants():

@@ -111,6 +111,11 @@ class RoverBody:
         self.motors_armed = self.hardware_ready and not self.config.safety.bench_safe_no_motors
         # Freshness cursor for event-based reflex consumption (see consume_reflex_stop).
         self._last_reflex_consumed_at: float = 0.0
+        # Fail-closed counter: stop forward motion if the front range is unknown
+        # for several consecutive checks (tolerates single ultrasonic dropouts,
+        # which are common right after the turret moves, without a blind window).
+        self._consecutive_none_range: int = 0
+        self._max_none_range: int = 3
 
     def _reflex_threshold_cm(self) -> float:
         # Configurable hard emergency floor instead of the old hardcoded max(45,...)
@@ -161,6 +166,25 @@ class RoverBody:
         if not self.hardware or not self.motors_armed or command.linear <= 0:
             return False
         sensors = self._sensor_snapshot()
+        # Fail CLOSED on an unknown forward range: should_reflex_stop returns
+        # (False, None) when distance is None, which would otherwise let a forward
+        # pulse run blind. Tolerate brief dropouts, then stop.
+        if sensors.get("front_distance_cm") is None:
+            self._consecutive_none_range += 1
+            if self._consecutive_none_range >= self._max_none_range:
+                self.state.last_reflex_stop = {
+                    "reason": f"front range unknown for {self._consecutive_none_range} consecutive checks; failing closed",
+                    "kind": "range_unknown",
+                    "front_distance_cm": None,
+                    "threshold_cm": self._reflex_threshold_cm(),
+                    "drive": command.model_dump(),
+                    "source": source,
+                    "time": time.time(),
+                }
+                await self.stop()
+                return True
+        else:
+            self._consecutive_none_range = 0
         reflex, reason = should_reflex_stop(command, sensors, threshold_cm=self._reflex_threshold_cm())
         kind = "ultrasonic"
         if not reflex:

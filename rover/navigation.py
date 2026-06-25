@@ -48,6 +48,10 @@ class DoorwayBands:
     clear_cm: float
     reflex_hard_cm: float
 
+    def __post_init__(self) -> None:
+        if not (self.emergency_cm < self.blocked_cm < self.clear_cm):
+            raise ValueError(f"DoorwayBands must satisfy emergency_cm < blocked_cm < clear_cm (got {self.emergency_cm}, {self.blocked_cm}, {self.clear_cm})")
+
 
 @dataclass(frozen=True)
 class DoorwayDecision:
