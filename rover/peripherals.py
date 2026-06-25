@@ -187,6 +187,9 @@ def play_audio_file(path: str | Path, *, timeout: float = 20) -> dict[str, Any]:
         cmd.append(str(path))
     elif shutil.which("mpg123"):
         cmd = ["mpg123", "-q"]
+        gain = os.getenv("CLEO_ROVER_MPG123_GAIN")
+        if gain:
+            cmd += ["-f", str(gain)]
         if card:
             cmd += ["-a", f"plughw:{card},0"]
         cmd.append(str(path))

@@ -1632,7 +1632,7 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
     events.add(event)
     await pip_set_expression(ExpressionMode.seeking, "scout", 0.55)
     if command.speak:
-        actions.append({"kind": "speech", "result": speak_text("I will scout in tiny steps and stop if the path is close.")})
+        actions.append({"kind": "speech", "result": speak_text("Scout mode. I will move farther when it is open, and slow down near the doorway.")})
 
     blocked_streak = 0
     for cycle in range(1, command.cycles + 1):
@@ -1661,16 +1661,25 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
 
         if front_value is None:
             blocked_streak += 1
+            if command.speak:
+                actions.append({"kind": "speech", "cycle": cycle, "result": speak_text("Range uncertain. I am scanning for a safe opening.")})
             action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason="front range unknown")
         elif front_value < command.blocked_cm:
             blocked_streak += 1
             await body.stop()
+            if command.speak:
+                actions.append({"kind": "speech", "cycle": cycle, "result": speak_text("Too close. I am stopping and looking for another way.")})
             action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"front blocked {front_value:.1f}cm")
         elif center_distance is not None and center_distance < command.clear_cm:
             blocked_streak += 1
+            if command.speak:
+                actions.append({"kind": "speech", "cycle": cycle, "result": speak_text("Doorway is close. I am scanning before I move.")})
             action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"center not clear {center_distance:.1f}cm")
         elif best_bearing is not None and best_distance is not None and abs(best_bearing) >= 18.0 and best_distance > (center_distance or 0.0) + 25.0:
             blocked_streak += 1
+            if command.speak:
+                direction = "right" if best_bearing > 0 else "left"
+                actions.append({"kind": "speech", "cycle": cycle, "result": speak_text(f"I see more room to the {direction}. Turning to line up.")})
             action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"better opening at {best_bearing:.0f}deg")
         else:
             blocked_streak = 0
@@ -1684,6 +1693,8 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
                     max_step_cm=command.max_step_cm,
                     fallback_step_cm=command.step_cm,
                 )
+            if command.speak:
+                actions.append({"kind": "speech", "cycle": cycle, "result": speak_text(f"Path looks open. Moving about {planned_step:.0f} centimeters.")})
             move = await adaptive_forward_stride(planned_step, chunk_cm=command.stride_chunk_cm, require_permission=True, brake_cm=command.blocked_cm)
             action = {"kind": "adaptive-move" if command.adaptive_step else "move-step", "planned_step_cm": planned_step, "result": move}
 
