@@ -71,6 +71,26 @@ def prioritize_scan_angles(base_angles: list[float], bias: dict[str, Any], *, ne
     return sorted(base_angles, key=score)
 
 
+def least_recently_visited_first(base_angles: list[float], items: list[Any], *, now: float, near_deg: float = 15.0) -> list[float]:
+    """Order scan angles so the least-recently-observed bearings come first.
+
+    Drives systematic coverage instead of re-treading the same lane: a bearing
+    never seen (no nearby remembered scan) sorts first, then oldest. Order only --
+    all angles are still sampled, so this cannot skip an obstacle.
+    """
+    def staleness(angle: float) -> float:
+        ages = [
+            now - float(it.last_seen_at)
+            for it in items
+            if getattr(it, "bearing_deg", None) is not None
+            and getattr(it, "last_seen_at", None)
+            and abs(round(float(it.bearing_deg)) - round(float(angle))) <= near_deg
+        ]
+        return max(ages) if ages else float("inf")
+
+    return sorted(base_angles, key=staleness, reverse=True)
+
+
 def nearest_landmark(items: list[Any], *, label: str | None = None, kind: str | None = None) -> Any | None:
     """Closest remembered landmark matching label/kind that has a known distance."""
     candidates = [

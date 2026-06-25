@@ -90,6 +90,12 @@ class SafetyConfig(BaseModel):
     # to max(45, ...), which made approaching a doorway (closing inside 45cm)
     # structurally impossible. Configurable + scoped per profile now.
     reflex_hard_cm: float = 30.0
+    # Liveness backstop: the persistent watchdog force-stops a drive that should
+    # have ended (its pulse + this slack) but didn't (e.g. a stalled drive monitor).
+    motion_deadline_slack_ms: int = Field(default=400, ge=50, le=3000)
+    # Thermal back-off (fanless Pi running autonomy for hours). cpu_temp from doctor.
+    thermal_warn_c: float = Field(default=75.0, ge=50.0, le=90.0)
+    thermal_hard_c: float = Field(default=82.0, ge=55.0, le=95.0)
     # Cliff (downward IR) + bumper reflexes. OFF by default because the IR polarity
     # and bumper wiring must be verified on the physical robot first; flip these on
     # in the floor-cautious profile once `line_drop_value` matches your sensors.
@@ -191,6 +197,13 @@ class LifeLoopConfig(BaseModel):
     # idle tick (mood/attention/curiosity decay), and evolves on its own without
     # an external poker. 0 disables. Only auto-starts on hardware.
     heartbeat_seconds: int = Field(default=20, ge=0, le=600)
+    # Behavior-arbitration daemon: the top-level "decide what to do and do it"
+    # loop. OFF by default; flip on (on hardware) for self-directed operation.
+    arbiter_enabled: bool = False
+    arbiter_interval_seconds: int = Field(default=15, ge=2, le=600)
+    # Auto self-preservation: at/below this battery %, the arbiter heads for the
+    # charger (return-to-landmark) instead of exploring; critically low still asks.
+    return_to_charger_min_battery: float = Field(default=35.0, ge=5.0, le=80.0)
     personality: PersonalityConfig = Field(default_factory=PersonalityConfig)
     quiet_hours: QuietHoursConfig = Field(default_factory=QuietHoursConfig)
     behavior_cooldowns: BehaviorCooldownConfig = Field(default_factory=BehaviorCooldownConfig)

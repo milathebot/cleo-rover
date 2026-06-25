@@ -259,6 +259,20 @@ class FirstAdventureCommand(BaseModel):
     notes: str | None = Field(default=None, max_length=240)
 
 
+class Goal(BaseModel):
+    """A persistent mission the LLM mind or owner sets; the local layer executes
+    it across arbiter ticks, so it survives the mind going offline."""
+
+    kind: str = Field(default="observe", pattern="^(explore_zone|find_person|return_to|observe)$")
+    target: str = Field(default="", max_length=80)
+    status: str = Field(default="active", pattern="^(active|done|abandoned)$")
+    step_budget: int = Field(default=12, ge=1, le=200)
+    progress: int = Field(default=0, ge=0)
+    created_at: float | None = None
+    expires_at: float | None = None
+    notes: str | None = Field(default=None, max_length=240)
+
+
 class PipModeCommand(BaseModel):
     mode: str = Field(default="social", pattern="^(sleep|quiet|social|assistant)$")
     reason: str | None = Field(default=None, max_length=160)

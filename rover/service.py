@@ -11,7 +11,7 @@ from fastapi import FastAPI, Response
 from fastapi.responses import HTMLResponse
 
 from .autonomy import AutonomyEngine, EventStore
-from .awareness import capture_motion_pair, doctor_report, last_seen_summary, prune_capture_dir, range_state_from_samples
+from .awareness import capture_motion_pair, cpu_temp_c, doctor_report, last_seen_summary, prune_capture_dir, range_state_from_samples
 from .config import load_config
 from .drivers import RoverBody
 from .hermes_bridge import ask_hermes_as_pip, hermes_configured
@@ -31,6 +31,10 @@ from .odometry import estimate_chunk_distance_cm, motion_model_from
 from . import vision_service
 from . import voice_daemon
 from . import explore
+from . import arbiter
+from . import social
+from . import stuck
+from .models import Goal
 from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, HallwayScoutCommand, LineFollowCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .line_follow import decide_line_follow, search_turn
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
@@ -121,6 +125,7 @@ def _start_life_heartbeat() -> None:
 async def start_body_watchdog() -> None:
     body.start_safety_watchdog()
     _start_life_heartbeat()
+    _start_arbiter_loop()
 
 
 @app.on_event("shutdown")
@@ -128,6 +133,8 @@ async def stop_body_watchdog() -> None:
     await body.stop_safety_watchdog()
     if _heartbeat_task and not _heartbeat_task.done():
         _heartbeat_task.cancel()
+    if _arbiter_task and not _arbiter_task.done():
+        _arbiter_task.cancel()
 
 
 def gpio_pin_claims() -> dict[int, list[str]]:
@@ -271,6 +278,13 @@ def drive_safety(command: DriveCommand, *, require_permission: bool = False) -> 
     distance = normalize_distance_cm(sensors_now.get("front_distance_cm"))
     if command.linear > 0 and distance is not None and float(distance) < CONFIG.safety.front_stop_distance_cm:
         return False, f"drive rejected: obstacle at {distance}cm is closer than stop threshold {CONFIG.safety.front_stop_distance_cm}cm", command
+    # Thermal back-off for a fanless Pi running autonomy for hours (None off-Pi).
+    temp = cpu_temp_c()
+    if temp is not None:
+        if temp >= CONFIG.safety.thermal_hard_c and command.linear > 0:
+            return False, f"drive rejected: CPU {temp}C >= hard thermal limit {CONFIG.safety.thermal_hard_c}C; cooling down", command
+        if temp >= CONFIG.safety.thermal_warn_c:
+            command = command.model_copy(update={"linear": command.linear * 0.5, "turn": command.turn * 0.5})
     return True, "drive allowed", command
 
 
@@ -1517,7 +1531,14 @@ async def mind_step(zone: str = "office") -> dict:
         timeout=CONFIG.mind.timeout_s,
     )
     if mind_result.get("ok"):
-        command = BodyIntentCommand.model_validate(mind_result["intent"] | {"source": "mind"})
+        intent = mind_result["intent"]
+        # set_goal is a mission, not a motor command: persist it (the arbiter/local
+        # layer executes it across ticks, even if the mind later goes offline).
+        if intent.get("intent") == "set_goal":
+            params = intent.get("params") or {}
+            goal = store_goal(Goal(kind=params.get("goal_kind", "observe"), target=str(params.get("target", "")), notes="set by mind"))
+            return {"ok": True, "source": "mind", "mind_used": True, "set_goal": goal.model_dump()}
+        command = BodyIntentCommand.model_validate(intent | {"source": "mind"})
         result = await supervisor_intent(command)
         if result.get("accepted"):
             return {"ok": True, "source": "mind", "mind_used": True, "intent": command.model_dump(), "result": result}
@@ -1559,10 +1580,13 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
     movement_grant = grant.model_dump() | {"expires_at": time.time() + grant.duration_seconds, "active": grant.allow_movement}
     event = store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="reactive_explore", label=grant.task, payload=movement_grant | {"zone": command.zone}))
     events.add(event)
-    # Pre-move memory consult: bias the scan order toward remembered-open bearings
-    # and away from remembered close obstacles (age-decayed). Order only -- the same
-    # angles are still sampled, so this never skips a real obstacle.
-    command = command.model_copy(update={"scan_angles": explore.prioritize_scan_angles(command.scan_angles, explore.memory_bias(store.list_spatial(100), now=time.time()))})
+    # Pre-move memory consult + coverage: order the scan so least-recently-visited
+    # bearings come first (systematic sweep), then prefer remembered-open / avoid
+    # remembered-close. Order only -- the same angles are still sampled.
+    _now = time.time()
+    _items = store.list_spatial(200)
+    _covered = explore.least_recently_visited_first(command.scan_angles, _items, now=_now)
+    command = command.model_copy(update={"scan_angles": explore.prioritize_scan_angles(_covered, explore.memory_bias(_items, now=_now))})
     plan: list[dict] = []
     deadline = time.time() + command.duration_seconds
     blocked_streak = 0
@@ -1570,6 +1594,11 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
     for cycle in range(command.max_cycles):
         if time.time() >= deadline:
             plan.append({"kind": "halt", "reason": "duration elapsed"})
+            break
+        # Escalation ladder: when truly stuck (high blocked streak), stop grinding
+        # and surface a corner-trap so the post-run rescue asks the owner for help.
+        if stuck.stuck_level(blocked_streak=blocked_streak) >= 4:
+            plan.append({"kind": "corner-trap", "cycle": cycle + 1, "reason": f"stuck after blocked_streak={blocked_streak}; asking for help"})
             break
         sensors_now = body.sensors()
         distance = sensors_now.get("front_distance_cm")
@@ -2253,3 +2282,235 @@ async def autonomy_tick(command: AutonomyTickCommand | None = None) -> dict:
         allow_movement=command.allow_movement,
     )
     return await apply_decision(decision)
+
+
+# ---------------------------------------------------------------------------
+# Top-level autonomy: goals, self-preservation, social reactions, and the
+# behavior-arbitration loop that ties everything together so Pip acts on its own.
+# All motion still flows through guarded_drive + grants + the reflex floor.
+# ---------------------------------------------------------------------------
+
+_arbiter_task: asyncio.Task | None = None
+
+
+def active_goal() -> Goal | None:
+    raw = pip_state.get("goal")
+    if not raw:
+        return None
+    try:
+        goal = Goal.model_validate(raw)
+    except Exception:
+        return None
+    if goal.status != "active":
+        return None
+    if goal.expires_at and time.time() > float(goal.expires_at):
+        return None
+    return goal
+
+
+def store_goal(goal: Goal) -> Goal:
+    if goal.created_at is None:
+        goal = goal.model_copy(update={"created_at": time.time()})
+    pip_state["goal"] = goal.model_dump()
+    save_pip_runtime()
+    remember_event(RoverEvent(kind=RoverEventKind.manual_control, source="goal", label=f"goal:{goal.kind}:{goal.target}", payload=goal.model_dump()))
+    return goal
+
+
+def clear_goal() -> None:
+    pip_state.pop("goal", None)
+    save_pip_runtime()
+
+
+def _latest_person_pet() -> dict:
+    """Person/pet presence + coarse bearing from the latest vision analysis."""
+    info = {"person": False, "pet": False, "bearing": None, "distance": None}
+    vis = store.recent_events(1, kind=RoverEventKind.vision_analysis.value)
+    if not vis:
+        return info
+    payload = vis[0].payload or {}
+    labels = {str(label).lower() for label in (payload.get("labels") or [])}
+    info["person"] = bool(labels & {"person", "human", "noot"})
+    info["pet"] = bool(labels & {"cat", "dog", "pet"})
+    for obj in payload.get("objects") or []:
+        if isinstance(obj, dict) and str(obj.get("label", "")).lower() in {"person", "cat", "dog"}:
+            info["bearing"] = obj.get("bearing_bucket")
+            break
+    return info
+
+
+async def behavior_return_to_charger(*, allow_movement: bool) -> dict:
+    """Self-preservation: head to a remembered charger, else ask to be docked."""
+    zone = str(pip_state.get("current_zone") or "office")
+    result = await return_to_task(label="charger", allow_movement=allow_movement, zone=zone)
+    if not result.get("found"):
+        rescue = await pip_rescue("my battery is getting low and I can't find my charger. can you help me dock?", priority="high", payload={"battery": battery_safety_summary(body.sensors())})
+        return {"behavior": "return_to_charger", "found": False, "rescue": rescue}
+    return {"behavior": "return_to_charger", "result": result}
+
+
+async def pursue_goal(goal: Goal, *, allow_movement: bool) -> dict:
+    zone = goal.target or str(pip_state.get("current_zone") or "office")
+    if goal.kind == "return_to":
+        result = {"kind": "return_to", "result": await return_to_task(label=goal.target or "charger", allow_movement=allow_movement, zone=str(pip_state.get("current_zone") or "office"))}
+    elif goal.kind == "explore_zone":
+        loop = await little_being_loop(LittleBeingLoopCommand(zone=zone, allow_movement=allow_movement, duration_seconds=30, explore_cycles=6, capture_vision=True, compact=True, mood=autonomy.state.mood))
+        result = {"kind": "explore_zone", "result": loop.get("summary")}
+    elif goal.kind == "find_person":
+        observe = await vision_awareness_task(VisionAwarenessCommand(zone=zone, capture=True, scan=True, compact=True, notes="goal: find person"))
+        result = {"kind": "find_person", "result": {"scan_summary": observe.get("scan_summary"), "seen": _latest_person_pet()}}
+    else:  # observe
+        observe = await vision_awareness_task(VisionAwarenessCommand(zone=zone, capture=False, scan=True, compact=True, notes="goal: observe"))
+        result = {"kind": "observe", "result": {"scan_summary": observe.get("scan_summary")}}
+    # Advance the goal and retire it when its step budget is spent.
+    goal = goal.model_copy(update={"progress": goal.progress + 1})
+    if goal.progress >= goal.step_budget:
+        goal = goal.model_copy(update={"status": "done"})
+    store_goal(goal)
+    return {"goal": goal.model_dump(), **result}
+
+
+async def behavior_socialize(*, allow_movement: bool, quiet: bool) -> dict:
+    info = _latest_person_pet()
+    last_greet = pip_state.get("last_greet_at")
+    seconds = (time.time() - float(last_greet)) if last_greet else None
+    react = social.decide_social_reaction(
+        person_present=info["person"],
+        pet_present=info["pet"],
+        bearing_bucket=info["bearing"],
+        distance_cm=info["distance"],
+        seconds_since_greet=seconds,
+        quiet=quiet,
+    )
+    actions: list[dict] = [{"kind": "reaction", "result": react}]
+    turn_deg = float(react.get("turn_deg") or 0.0)
+    if abs(turn_deg) >= 1.0:
+        if allow_movement:
+            actions.append({"kind": "turn", "result": await rotate_step(RotateStepCommand(deg=turn_deg, require_permission=True))})
+        else:
+            # Even bench-safe, Pip can orient its turret/gaze toward the person.
+            await body.set_turret(TurretCommand(pan_deg=max(-80.0, min(80.0, turn_deg))))
+            actions.append({"kind": "look", "pan_deg": turn_deg})
+    if react.get("reaction") == "social.greet" or react.get("reaction") == "greet":
+        await pip_greet(source="social")
+    return {"behavior": "socialize", "reaction": react, "actions": actions}
+
+
+def _now_minutes() -> int:
+    local = time.localtime()
+    return local.tm_hour * 60 + local.tm_min
+
+
+def arbiter_context() -> dict:
+    sensors_now = body.sensors()
+    battery = battery_safety_summary(sensors_now)
+    feelings = pip_feelings()
+    items = store.list_spatial(200)
+    dock_known = explore.nearest_landmark(items, kind="dock") is not None or explore.nearest_landmark(items, label="charg") is not None
+    quiet = arbiter.in_quiet_hours(_now_minutes(), CONFIG.life_loop.quiet_hours.model_dump())
+    movement_allowed, _reason = pip_can_autonomously_move(allow_movement=True, battery=battery)
+    info = _latest_person_pet()
+    front = sensors_now.get("front_distance_cm")
+    hazards_present = front is not None and float(front) < float(CONFIG.safety.front_stop_distance_cm) + 10.0
+    return {
+        "mode": pip_state.get("mode"),
+        "awake": pip_state.get("awake"),
+        "battery_recommendation": battery["recommendation"],
+        "battery_percent": sensors_now.get("battery_percent"),
+        "energy": feelings["energy"],
+        "curiosity": feelings["curiosity"],
+        "boredom": feelings["boredom"],
+        "has_goal": active_goal() is not None,
+        "person_present": info["person"] or info["pet"],
+        "hazards_present": hazards_present,
+        "quiet": quiet,
+        "do_not_disturb": autonomy.state.do_not_disturb,
+        "movement_allowed": movement_allowed,
+        "dock_known": dock_known,
+        "return_to_charger_min_battery": CONFIG.life_loop.return_to_charger_min_battery,
+    }
+
+
+async def arbiter_tick(*, allow_movement: bool = False) -> dict:
+    """One top-level decision: pick a behavior and run it via a safe primitive."""
+    ctx = arbiter_context()
+    decision = arbiter.arbitrate(ctx)
+    behavior = decision["behavior"]
+    move_ok = bool(allow_movement and ctx["movement_allowed"])
+    result: dict[str, Any]
+    if behavior == arbiter.BEHAVIOR_REST:
+        await pip_set_expression(ExpressionMode.sleeping, "rest", 0.25)
+        result = {"resting": True}
+    elif behavior == arbiter.BEHAVIOR_RETURN_TO_CHARGER:
+        result = await behavior_return_to_charger(allow_movement=move_ok)
+    elif behavior == arbiter.BEHAVIOR_PURSUE_GOAL:
+        goal = active_goal()
+        result = await pursue_goal(goal, allow_movement=move_ok) if goal else {"note": "no active goal"}
+    elif behavior == arbiter.BEHAVIOR_SOCIALIZE:
+        result = await behavior_socialize(allow_movement=move_ok, quiet=ctx["quiet"])
+    elif behavior == arbiter.BEHAVIOR_PATROL:
+        loop = await little_being_loop(LittleBeingLoopCommand(zone=str(pip_state.get("current_zone") or "office"), allow_movement=move_ok, duration_seconds=30, explore_cycles=4 + round(autonomy.state.curiosity * 4), capture_vision=True, compact=True, mood=autonomy.state.mood))
+        result = {"summary": loop.get("summary")}
+    elif behavior == arbiter.BEHAVIOR_HOLD:
+        await body.stop()
+        result = {"holding": True}
+    else:  # observe
+        observe = await vision_awareness_task(VisionAwarenessCommand(zone=str(pip_state.get("current_zone") or "office"), capture=False, scan=True, compact=True, notes="arbiter observe"))
+        result = {"scan_summary": observe.get("scan_summary")}
+    remember_event(RoverEvent(kind=RoverEventKind.idle_tick, source="arbiter", label=f"arbiter:{behavior}", payload={"decision": decision}))
+    return {"ok": True, "decision": decision, "context": ctx, "result": result}
+
+
+def _start_arbiter_loop() -> None:
+    """Start the self-directed behavior loop (hardware + arbiter_enabled only)."""
+    global _arbiter_task
+    interval = CONFIG.life_loop.arbiter_interval_seconds
+    if body.mode != "hardware" or not CONFIG.life_loop.enabled or not CONFIG.life_loop.arbiter_enabled or interval <= 0:
+        return
+    if _arbiter_task and not _arbiter_task.done():
+        return
+
+    async def loop() -> None:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await arbiter_tick(allow_movement=True)
+            except Exception:
+                pass
+
+    _arbiter_task = asyncio.create_task(loop())
+
+
+@app.get("/pip/arbiter")
+def pip_arbiter_status() -> dict:
+    return {
+        "ok": True,
+        "enabled": CONFIG.life_loop.arbiter_enabled,
+        "interval_seconds": CONFIG.life_loop.arbiter_interval_seconds,
+        "running": bool(_arbiter_task and not _arbiter_task.done()),
+        "context": arbiter_context(),
+        "would_choose": arbiter.arbitrate(arbiter_context()),
+        "note": "The arbiter picks one behavior per tick and runs it via existing safe primitives; OFF by default and hardware-only.",
+    }
+
+
+@app.post("/pip/arbiter/tick")
+async def pip_arbiter_tick(allow_movement: bool = False) -> dict:
+    return await arbiter_tick(allow_movement=allow_movement)
+
+
+@app.post("/pip/goal")
+def pip_set_goal(goal: Goal) -> dict:
+    return {"ok": True, "goal": store_goal(goal).model_dump()}
+
+
+@app.get("/pip/goal")
+def pip_get_goal() -> dict:
+    goal = active_goal()
+    return {"ok": True, "goal": goal.model_dump() if goal else None}
+
+
+@app.delete("/pip/goal")
+def pip_delete_goal() -> dict:
+    clear_goal()
+    return {"ok": True, "goal": None}

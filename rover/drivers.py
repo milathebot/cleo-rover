@@ -215,11 +215,21 @@ class RoverBody:
         if self._watchdog_task and not self._watchdog_task.done():
             return
 
+        slack_s = float(self.config.safety.motion_deadline_slack_ms) / 1000.0
+
         async def watchdog() -> None:
             while True:
                 await asyncio.sleep(0.03)
                 command = self.state.last_drive
-                if self.state.stopped or command is None or command.linear <= 0:
+                if self.state.stopped or command is None:
+                    continue
+                # Liveness backstop: if a drive should have ended (its pulse + slack)
+                # but the rover is still marked moving, force-stop. Catches a stalled
+                # or cancelled drive_monitor so motion can never run away.
+                if self.state.last_drive_at is not None and time.time() > self.state.last_drive_at + command.duration_ms / 1000.0 + slack_s:
+                    await self.stop()
+                    continue
+                if command.linear <= 0:
                     continue
                 await self._check_forward_reflex(command, source="persistent_watchdog")
 

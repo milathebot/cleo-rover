@@ -27,7 +27,8 @@ from typing import Any
 
 # Closed intent vocabulary. Mirrors rover.supervisor.SAFE_INTENTS so every value
 # is something the Pi knows how to validate and execute as a bounded primitive.
-ALLOWED_INTENTS = ("status", "stop", "scan", "look", "say", "mood", "move_step", "rotate_step", "idle")
+ALLOWED_INTENTS = ("status", "stop", "scan", "look", "say", "mood", "move_step", "rotate_step", "idle", "set_goal")
+GOAL_KINDS = ("explore_zone", "find_person", "return_to", "observe")
 ALLOWED_MOODS = ("idle", "happy", "sad", "alert", "thinking", "confused", "speaking", "mad", "focused", "laugh", "curious", "watching", "seeking")
 
 # Hard caps the mind's params are clamped to before the Pi even validates them.
@@ -116,6 +117,10 @@ def clamp_intent(intent: dict[str, Any]) -> dict[str, Any]:
         angles = raw_params.get("angles")
         if isinstance(angles, list):
             params["angles"] = [_clamp(a, -80.0, 80.0, 0.0) for a in angles][:9]
+    if name == "set_goal":
+        kind = str(raw_params.get("goal_kind", "observe")).strip().lower()
+        params["goal_kind"] = kind if kind in GOAL_KINDS else "observe"
+        params["target"] = str(raw_params.get("target", ""))[:80]
     mood = str(intent.get("mood")).strip().lower() if intent.get("mood") else None
     if mood not in ALLOWED_MOODS:
         mood = None

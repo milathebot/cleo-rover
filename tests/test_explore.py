@@ -51,6 +51,14 @@ def test_nearest_landmark_and_bearing_to_turn():
     assert -25.0 <= explore.bearing_to_turn(nearest.bearing_deg) <= 25.0
 
 
+def test_least_recently_visited_first_prefers_unseen_bearings():
+    now = time.time()
+    items = [SpatialMemoryItem(id="seen", label="scan", kind="range_scan", bearing_deg=0.0, distance_m=1.0, last_seen_at=now - 1.0)]
+    # 0deg was just scanned; 40deg has never been seen -> 40 comes first.
+    ordered = explore.least_recently_visited_first([0.0, 40.0], items, now=now)
+    assert ordered[0] == 40.0
+
+
 def test_return_to_unknown_landmark_is_graceful():
     data = client.post("/tasks/return-to?label=nonexistent-thing-xyz").json()
     assert data["ok"] is True
