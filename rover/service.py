@@ -30,6 +30,7 @@ from .navigation import (
 from .odometry import estimate_chunk_distance_cm, motion_model_from
 from . import vision_service
 from . import voice_daemon
+from . import explore
 from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, HallwayScoutCommand, LineFollowCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .line_follow import decide_line_follow, search_turn
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
@@ -621,6 +622,7 @@ def situation() -> dict:
         "movement": movement_status(),
         "map_summary": map_summary(items),
         "last_seen": last_seen_summary(items, limit=10),
+        "memory_bias": explore.memory_bias(items, now=time.time()),
         "recent_events": [event.model_dump() for event in store.recent_events(8)],
     }
 
@@ -1481,6 +1483,10 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
     movement_grant = grant.model_dump() | {"expires_at": time.time() + grant.duration_seconds, "active": grant.allow_movement}
     event = store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="reactive_explore", label=grant.task, payload=movement_grant | {"zone": command.zone}))
     events.add(event)
+    # Pre-move memory consult: bias the scan order toward remembered-open bearings
+    # and away from remembered close obstacles (age-decayed). Order only -- the same
+    # angles are still sampled, so this never skips a real obstacle.
+    command = command.model_copy(update={"scan_angles": explore.prioritize_scan_angles(command.scan_angles, explore.memory_bias(store.list_spatial(100), now=time.time()))})
     plan: list[dict] = []
     deadline = time.time() + command.duration_seconds
     blocked_streak = 0
@@ -1987,6 +1993,36 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
         "final_front_distance_cm": final_sensors.get("front_distance_cm"),
         "safety": "Adaptive route strides executed as short chunks, stop after every chunk, ultrasonic checks and range-scan before movement, scan+turn when center is not clear, camera/Hermes context at configured intervals.",
         "actions": compact_plan(actions) if command.compact else actions,
+    }
+
+
+@app.post("/tasks/return-to")
+async def return_to_task(label: str = "charger", allow_movement: bool = False, zone: str = "office") -> dict:
+    """Orient toward a remembered landmark (e.g. the charger).
+
+    Scans, finds the nearest matching landmark in spatial memory, and (if movement
+    is allowed + granted) turns toward its bearing. This is the 'go back to a known
+    place' primitive; it only ORIENTS here -- full path planning is the LLM mind's
+    job. Returns found:false (with guidance) when nothing matches yet.
+    """
+    await map_scan(MapScanCommand(zone=zone, angles=[-60, -40, -20, 0, 20, 40, 60], settle_ms=200))
+    items = store.list_spatial(300)
+    target = explore.nearest_landmark(items, label=label)
+    if target is None or target.bearing_deg is None:
+        return {"ok": True, "found": False, "label": label, "note": f"no remembered landmark matching '{label}'; explore/observe first or POST /map/remember"}
+    turn_deg = explore.bearing_to_turn(target.bearing_deg)
+    actions: list[dict[str, Any]] = [{"kind": "target", "landmark": target.model_dump(), "turn_deg": turn_deg}]
+    if allow_movement and abs(turn_deg) >= 1.0:
+        extend_active_movement_grant(10)
+        actions.append({"kind": "turn", "result": await rotate_step(RotateStepCommand(deg=turn_deg, require_permission=True))})
+    return {
+        "ok": True,
+        "found": True,
+        "label": label,
+        "target": target.model_dump(),
+        "turn_deg": turn_deg,
+        "actions": actions,
+        "safety": "return-to only orients toward a remembered landmark; movement gated by grant + armed motors.",
     }
 
 

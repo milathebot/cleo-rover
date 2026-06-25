@@ -204,6 +204,11 @@ def main(argv: list[str] | None = None) -> int:
     hallway_scout.add_argument("--verbose", action="store_true")
     hallway_scout.add_argument("--notes", default=None)
 
+    return_to = sub.add_parser("return-to")
+    return_to.add_argument("label", nargs="?", default="charger", help="Landmark label to head back toward, e.g. charger")
+    return_to.add_argument("--zone", default="office")
+    return_to.add_argument("--allow-movement", action="store_true")
+
     line_follow = sub.add_parser("line-follow")
     line_follow.add_argument("--zone", default="line")
     line_follow.add_argument("--allow-movement", action="store_true")
@@ -462,6 +467,9 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "GET", "/autonomy/state")
     elif args.cmd == "tick":
         result = request(args.base, "POST", "/autonomy/tick", {"allow_movement": False, "inject_idle_tick": True})
+    elif args.cmd == "return-to":
+        path = f"/tasks/return-to?label={urllib.parse.quote(args.label)}&zone={urllib.parse.quote(args.zone)}&allow_movement={str(args.allow_movement).lower()}"
+        result = request(args.base, "POST", path, timeout=30.0)
     elif args.cmd == "line-follow":
         timeout = max(30.0, args.duration_seconds + 15.0)
         result = request(args.base, "POST", "/tasks/line-follow", {
