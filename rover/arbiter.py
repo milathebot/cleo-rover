@@ -61,13 +61,16 @@ def arbitrate(ctx: dict) -> dict:
     if mode == "sleep" or ctx.get("awake") is False:
         return out(BEHAVIOR_REST, "asleep / sleep mode")
 
-    # Self-preservation is the top non-safety priority.
-    if ctx.get("battery_recommendation") == "charge_before_movement":
+    # Self-preservation is the top non-safety priority. Skip it if already charging
+    # (Pip is docked, so don't drive off looking for the charger).
+    charging = bool(ctx.get("battery_charging"))
+    if not charging and ctx.get("battery_recommendation") == "charge_before_movement":
         return out(BEHAVIOR_RETURN_TO_CHARGER, "battery critically low; seeking charger / asking for help")
     battery_percent = ctx.get("battery_percent")
     min_batt = float(ctx.get("return_to_charger_min_battery", 35.0))
     if (
-        battery_percent is not None
+        not charging
+        and battery_percent is not None
         and float(battery_percent) <= min_batt
         and ctx.get("movement_allowed")
         and ctx.get("dock_known")

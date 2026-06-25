@@ -49,6 +49,16 @@ class CruiseParams:
     pulse_ms: int = 200  # short re-issued pulse so the watchdog deadline still bounds it
 
 
+def grant_permits(grant: dict | None, owner: str) -> bool:
+    """True if an active grant lets `owner` drive: the grant must be active and
+    either ownerless or owned by `owner`. A foreign owner means cruise yields
+    (stops) rather than driving under another task's caps (audit I-3)."""
+    if not grant or not grant.get("active"):
+        return False
+    g_owner = grant.get("owner")
+    return g_owner is None or g_owner == owner
+
+
 def t_forward_s(p: CruiseParams) -> float:
     """Worst-case seconds between two forward-cone pings (one side excursion + return)."""
     return 2.0 * (p.weave_settle_ms + p.ping_latency_ms) / 1000.0

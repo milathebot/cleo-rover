@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class DisplayConfig(BaseModel):
@@ -330,6 +330,19 @@ class RoverConfig(BaseModel):
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     nav: NavConfig = Field(default_factory=NavConfig)
     life_loop: LifeLoopConfig = Field(default_factory=LifeLoopConfig)
+
+    @model_validator(mode="after")
+    def _cruise_braking_invariant(self) -> "RoverConfig":
+        # The continuous-motion speed cap relies on being able to brake within the
+        # reflex distance: coast + margin must stay under the hard reflex floor, or
+        # a hand-edited profile silently breaks braking (audit P-2).
+        reflex = max(float(self.safety.reflex_hard_cm), float(self.safety.front_stop_distance_cm))
+        if self.nav.cruise_coast_cm + self.nav.cruise_margin_cm >= reflex:
+            raise ValueError(
+                f"cruise_coast_cm ({self.nav.cruise_coast_cm}) + cruise_margin_cm ({self.nav.cruise_margin_cm}) "
+                f"must be < reflex floor ({reflex}cm) so Pip can brake within the reflex distance"
+            )
+        return self
 
     def public_summary(self) -> dict[str, Any]:
         return self.model_dump(exclude_none=True)

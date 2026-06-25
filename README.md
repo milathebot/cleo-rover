@@ -247,7 +247,16 @@ GET  /battery
 GET  /calibration
 GET  /pip/rgb-affect
 POST /tasks/return-home
+GET  /health/composite
 ```
+
+### One-call status
+
+`GET /health/composite` is the single "is Pip OK / what is it doing / can it move
+now?" view — battery SOC + health, mood/energy, movement permission (+ grant
+owner), active goal, the arbiter's current choice, every subsystem readiness bit,
+nav/place state, RGB affect, and the build/soul version, with a top-level
+`ready_to_move` + `blockers`.
 
 ## Autonomy phases implemented
 

@@ -118,8 +118,18 @@ TOPO = (
     if _topo_data
     else TopoMap(sonar_thresh=CONFIG.nav.topo_sonar_thresh, hist_thresh=CONFIG.nav.topo_hist_thresh, min_votes=CONFIG.nav.topo_min_votes)
 )
-_last_topo_node: str | None = None
+# Restored from the KV store so "power up and return home" works after a reboot
+# (the TOPO graph was already persisted; this is the runtime pointer into it).
+_last_topo_node: str | None = store.load_json("last_topo_node")
 _heartbeat_count = 0
+
+
+def set_last_topo_node(node_id: str | None) -> None:
+    """Update + persist the current place pointer (survives a power cycle)."""
+    global _last_topo_node
+    _last_topo_node = node_id
+    if node_id:
+        store.save_json("last_topo_node", node_id)
 # Continuous-motion ("cruise") singletons. Tasks only auto-start on hardware with
 # nav.continuous_motion_enabled; the dry-run endpoint works anywhere.
 CRUISE_PARAMS = cruise_mod.cruise_params_from(CONFIG.nav, CONFIG.odometry, CONFIG.safety)
@@ -248,10 +258,23 @@ async def start_body_watchdog() -> None:
 @app.on_event("shutdown")
 async def stop_body_watchdog() -> None:
     await body.stop_safety_watchdog()
-    if _heartbeat_task and not _heartbeat_task.done():
-        _heartbeat_task.cancel()
-    if _arbiter_task and not _arbiter_task.done():
-        _arbiter_task.cancel()
+    # Cancel ALL background loops (not just heartbeat/arbiter) so none outlive the
+    # instance and double-drive motors/turret/RGB across a reload (audit I-9).
+    if _cruise_stop_event is not None:
+        _cruise_stop_event.set()
+    for task in (_heartbeat_task, _arbiter_task, _rgb_task_handle, _perception_task_handle, _cruise_task_handle):
+        if task is not None and not task.done():
+            task.cancel()
+    # Flush volatile state so a power loss between heartbeats doesn't regress mood/
+    # cooldowns/goals/place (audit I-10).
+    try:
+        store.save_state(autonomy.state)
+        if hasattr(autonomy, "last_behavior_at"):
+            store.save_cooldowns(autonomy.last_behavior_at)
+        save_pip_runtime()
+        save_topo()
+    except Exception:
+        pass
 
 
 def gpio_pin_claims() -> dict[int, list[str]]:
@@ -455,7 +478,74 @@ def operator_panel() -> str:
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True, "mode": body.mode, "name": CONFIG.name, "profile": CONFIG.profile}
+    return {"ok": True, "mode": body.mode, "name": CONFIG.name, "profile": CONFIG.profile, "version": app.version, "soul_version": PIP_SOUL_VERSION}
+
+
+@app.get("/health/composite")
+def health_composite() -> dict:
+    """The single 'is Pip OK / what is it doing / can it do X right now?' view.
+
+    Merges battery SOC+health, mood/energy, movement permission (+grant owner),
+    active goal, the arbiter's current choice + why-it-can't-move, every subsystem
+    readiness bit, nav/place state, the RGB affect, and the build/soul version --
+    so an operator answers 'safe to send it now?' in one call (audit P-1)."""
+    sensors_now = body.sensors()
+    reading = update_battery(sensors_now)
+    feelings = pip_feelings()
+    battery = battery_safety_summary(sensors_now)
+    move_ok, move_reason = pip_can_autonomously_move(allow_movement=True, battery=battery)
+    grant = active_movement_grant()
+    goal = active_goal()
+    # The arbiter's would-be choice (read-only) + the RGB affect.
+    try:
+        decision = arbiter.arbitrate(arbiter_context())
+    except Exception as exc:  # never let status crash
+        decision = {"behavior": "unknown", "reason": f"context error: {exc!r}"}
+    try:
+        frame = compute_affect_frame(phase=0.0)
+        rgb = {"color": list(frame.color), "pattern": frame.pattern, "label": frame.label}
+    except Exception:
+        rgb = None
+    blockers: list[str] = []
+    if not body.motors_armed:
+        blockers.append("motors not armed")
+    if reading.critical:
+        blockers.append("battery critical")
+    if not move_ok:
+        blockers.append(move_reason)
+    return {
+        "ok": True,
+        "ready_to_move": bool(move_ok and body.motors_armed and not reading.critical),
+        "blockers": blockers,
+        "identity": {"name": CONFIG.name, "profile": CONFIG.profile, "mode": pip_state.get("mode"), "version": app.version, "soul_version": PIP_SOUL_VERSION},
+        "battery": {
+            "soc_percent": reading.soc_percent,
+            "voltage": reading.voltage,
+            "charging": reading.charging,
+            "warn": reading.warn,
+            "critical": reading.critical,
+            "recommendation": "charge_before_movement" if reading.critical else battery.get("recommendation"),
+        },
+        "feelings": feelings,
+        "movement": {"permitted": move_ok, "reason": move_reason, "grant": grant, "owner": (grant or {}).get("owner")},
+        "goal": goal.model_dump() if goal else None,
+        "arbiter": {"would_choose": decision.get("behavior"), "reason": decision.get("reason")},
+        "nav": {
+            "current_place": _last_topo_node,
+            "topo": TOPO.summary(),
+            "continuous_motion_enabled": CONFIG.nav.continuous_motion_enabled,
+            "arbiter_enabled": CONFIG.life_loop.arbiter_enabled,
+        },
+        "rgb_affect": rgb,
+        "subsystems": {
+            **body.readiness(),
+            "ultrasonic_ready": sensors_now.get("ultrasonic_ready"),
+            "line_sensors_ready": sensors_now.get("line_sensors_ready"),
+            "adc_ready": sensors_now.get("adc_ready"),
+            "camera_ready": (sensors_now.get("camera") or {}).get("ready"),
+            "mind_configured": hermes_configured() or mind.mind_configured(),
+        },
+    }
 
 
 @app.get("/status", response_model=RoverStatus)
@@ -1046,7 +1136,7 @@ async def rotate_step(command: RotateStepCommand) -> dict:
 def grant_movement(command: MovementPermissionCommand) -> dict:
     global movement_grant
     expires_at = time.time() + command.duration_seconds
-    movement_grant = command.model_dump() | {"expires_at": expires_at, "active": command.allow_movement}
+    movement_grant = command.model_dump() | {"expires_at": expires_at, "active": command.allow_movement, "owner": command.task or "operator"}
     event = store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="operator", label=command.task, payload=movement_grant))
     events.add(event)
     return {"ok": True, "movement": movement_grant, "event": event.model_dump()}
@@ -1518,6 +1608,11 @@ def pip_set_exploration_goal(destination: str, *, source: str) -> dict:
     pip_state["exploration_goal"] = goal
     pip_state["mood"] = "seeking"
     pip_state["boredom"] = min(1.0, max(0.65, float(pip_state.get("boredom", 0) or 0)))
+    # Also create a FORMAL goal the arbiter will actually pursue (audit I-7): a
+    # destination wish was previously a dead parallel store the arbiter never read.
+    # Only auto-pursue ones that don't need human help (door/supervision).
+    if not requires_help:
+        store_goal(Goal(kind="explore_zone", target=destination, notes=f"owner asked to go to {destination}"))
     save_pip_runtime()
     remember_event(RoverEvent(kind=RoverEventKind.manual_control, source="pip_goal", label=f"goal:{destination}", payload=goal))
     return goal
@@ -1783,7 +1878,7 @@ async def topo_observe(command: MapScanCommand, name: str | None = None, action:
     scan, summary = await reactive_escape_scan(command.zone, command.angles)
     sig = sonar_signature_from_summary(summary, command.angles)
     result = TOPO.observe(sonar_sig=sig, last_node_id=_last_topo_node, action=action, now=time.time(), name=name or command.zone)
-    _last_topo_node = result["node_id"]
+    set_last_topo_node(result["node_id"])
     save_topo()
     return {"ok": True, "result": result, "signature": sig, "graph": TOPO.summary()}
 
@@ -1943,7 +2038,7 @@ def _cruise_dry_run_decision(summary: dict) -> dict:
 
 
 @app.post("/pip/cruise")
-async def pip_cruise(on: bool = False, dry_run: bool = True, zone: str = "cruise") -> dict:
+async def pip_cruise(on: bool = False, dry_run: bool = True, zone: str = "cruise", duration_seconds: int = 300) -> dict:
     """Continuous smooth-motion control.
 
     - dry_run (default): sweep once, show the cruise decision Pip WOULD make now
@@ -1972,16 +2067,21 @@ async def pip_cruise(on: bool = False, dry_run: bool = True, zone: str = "cruise
         return {"ok": False, "reason": "continuous motion disabled (nav.continuous_motion_enabled=false)"}
     if body.mode != "hardware":
         return {"ok": False, "reason": "cruise tasks only start on hardware; use dry_run in sim"}
+    if not body.motors_armed:
+        return {"ok": False, "reason": "motors not armed"}
     if _cruise_task_handle is not None and not _cruise_task_handle.done():
         return {"ok": True, "cruising": True, "note": "already cruising"}
     _cruise_stop_event = asyncio.Event()
+    # Cruise takes an owned self-grant so it (and only it) may drive while cruising;
+    # an operator/arbiter task overwriting the grant flips the owner -> cruise yields.
+    movement_grant = MovementPermissionCommand(task="cruise", allow_movement=True, duration_seconds=duration_seconds, max_linear=CONFIG.nav.cruise_max_linear, max_turn=CONFIG.nav.cruise_max_turn, notes="continuous cruise").model_dump() | {"expires_at": time.time() + duration_seconds, "active": True, "owner": "cruise"}
 
     def _clamp_pan(a: float) -> float:
         return max(CONFIG.turret.pan_min_deg, min(CONFIG.turret.pan_max_deg, float(a)))
 
     def _grant_active() -> bool:
-        g = active_movement_grant()
-        return bool(g and g.get("active"))
+        # Drive only while cruise still OWNS the grant (yield to any foreign owner).
+        return cruise_mod.grant_permits(active_movement_grant(), "cruise")
 
     _perception_task_handle = asyncio.create_task(
         perception_mod.perception_task(
@@ -2012,11 +2112,16 @@ async def return_home_task(goal: str = "charger", allow_movement: bool = False, 
     if not route.get("ok"):
         return {"ok": False, "reason": route.get("reason", "no route"), "route": route}
     state = topo_exec.ReturnState(path=list(route["path"]), actions=list(route["actions"]))
+    armed_note = None
+    if allow_movement and not body.motors_armed:
+        # Honest state: don't publish a live grant while motors are disarmed (I-4).
+        allow_movement = False
+        armed_note = "motors not armed; planned route only (no movement)"
     if not allow_movement:
-        return {"ok": True, "moved": False, "route": route, "status": state.status(), "note": "plan only; set allow_movement=true (with armed motors + grant) to traverse"}
+        return {"ok": True, "moved": False, "route": route, "status": state.status(), "note": armed_note or "plan only; set allow_movement=true (with armed motors + grant) to traverse"}
 
     grant = MovementPermissionCommand(task=f"return-home:{goal}", allow_movement=True, duration_seconds=duration_seconds, max_linear=0.3, max_turn=0.65, notes="Pi-side topo route traversal")
-    movement_grant = grant.model_dump() | {"expires_at": time.time() + grant.duration_seconds, "active": True}
+    movement_grant = grant.model_dump() | {"expires_at": time.time() + grant.duration_seconds, "active": True, "owner": "return_home"}
     events.add(store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="return_home", label=grant.task, payload=movement_grant | {"goal": goal})))
 
     log_steps: list[dict] = []
@@ -2037,7 +2142,7 @@ async def return_home_task(goal: str = "charger", allow_movement: bool = False, 
         rec = TOPO.recognize(sig, [], 0)
         result = state.on_observed(rec.node_id)
         if rec.node_id:
-            _last_topo_node = rec.node_id
+            set_last_topo_node(rec.node_id)
         log_steps.append({"hop": hops, "expected": state.expected_next, "observed": rec.node_id, "result": result, "status": state.status()})
         if result == "advanced" and state.done:
             break
@@ -2060,7 +2165,7 @@ async def wall_follow_task(zone: str = "wall", side: str = "left", allow_movemen
     side = "left" if side != "right" else "right"
     side_angle = max(CONFIG.turret.pan_min_deg, min(CONFIG.turret.pan_max_deg, 70.0 if side == "left" else -70.0))
     grant = MovementPermissionCommand(task=f"wall-follow:{zone}", allow_movement=allow_movement, duration_seconds=duration_seconds, max_linear=max(0.1, WALL_CFG.base_linear), max_turn=WALL_CFG.max_turn, notes="Pi-side PD wall follow")
-    movement_grant = grant.model_dump() | {"expires_at": time.time() + grant.duration_seconds, "active": grant.allow_movement}
+    movement_grant = grant.model_dump() | {"expires_at": time.time() + grant.duration_seconds, "active": grant.allow_movement and body.motors_armed, "owner": "wall_follow"}
     event = store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="wall_follow", label=grant.task, payload=movement_grant | {"zone": zone, "side": side}))
     events.add(event)
     plan: list[dict] = []
@@ -2111,7 +2216,10 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
         max_turn=0.65,
         notes=command.notes or "Pi-side Freenove-style reactive explore",
     )
-    movement_grant = grant.model_dump() | {"expires_at": time.time() + grant.duration_seconds, "active": grant.allow_movement}
+    # Honest grant: active only when movement is BOTH requested AND motors are armed,
+    # so /status never shows a live grant while disarmed (audit I-4). The loop still
+    # runs its sense/scan logic; guarded_drive is the real motion gate.
+    movement_grant = grant.model_dump() | {"expires_at": time.time() + grant.duration_seconds, "active": grant.allow_movement and body.motors_armed, "owner": "reactive_explore"}
     event = store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="reactive_explore", label=grant.task, payload=movement_grant | {"zone": command.zone}))
     events.add(event)
     # Pre-move memory consult + coverage: order the scan so least-recently-visited
@@ -2274,6 +2382,23 @@ async def vision_awareness_task(command: VisionAwarenessCommand) -> dict:
     return response
 
 
+async def topo_automap(zone: str) -> dict | None:
+    """Fingerprint the current place into the topo graph during normal autonomy so
+    the place-graph actually BUILDS (else return-home has no map). Cheap: one scan."""
+    if not CONFIG.nav.topo_enabled:
+        return None
+    try:
+        angles = sorted(set([float(a) for a in CONFIG.nav.cruise_side_angles] + [0.0]))
+        _, summary = await reactive_escape_scan(zone, angles)
+        sig = sonar_signature_from_summary(summary, angles)
+        result = TOPO.observe(sonar_sig=sig, last_node_id=_last_topo_node, action="forward", now=time.time(), name=zone)
+        set_last_topo_node(result["node_id"])
+        save_topo()
+        return result
+    except Exception:
+        return None
+
+
 @app.post("/tasks/little-being-loop")
 async def little_being_loop(command: LittleBeingLoopCommand) -> dict:
     started = time.time()
@@ -2322,6 +2447,10 @@ async def little_being_loop(command: LittleBeingLoopCommand) -> dict:
         steps.append({"kind": "observe", "result": {"capture": vision.get("capture"), "scan_summary": vision.get("scan_summary")}})
 
     await body.stop()
+    # Build the topological map as Pip patrols, so return-home has a graph to use.
+    automap = await topo_automap(command.zone)
+    if automap:
+        steps.append({"kind": "topo-automap", "result": {"event": automap.get("event"), "node_id": automap.get("node_id")}})
     final_sensors = body.sensors()
     final_battery = battery_safety_summary(final_sensors)
     if final_battery["recommendation"] == "charge_before_movement":
@@ -2874,13 +3003,22 @@ def _latest_person_pet() -> dict:
 
 
 async def behavior_return_to_charger(*, allow_movement: bool) -> dict:
-    """Self-preservation: head to a remembered charger, else ask to be docked."""
+    """Self-preservation: actually TRAVERSE the topo graph to the charger (relocalising
+    per node); fall back to orient-only, then ask to be docked. Wires the arbiter to
+    the real navigator instead of just pointing at the charger (audit I-1)."""
+    # Prefer the topo executor when we know where we are and a charger place exists.
+    has_dock = bool(TOPO.node_by_name("charg") or TOPO.node_by_name("dock"))
+    if CONFIG.nav.topo_enabled and _last_topo_node and has_dock:
+        home = await return_home_task(goal="charger", allow_movement=allow_movement)
+        if home.get("ok") and not home.get("aborted") and (home.get("done") or not allow_movement):
+            return {"behavior": "return_to_charger", "via": "topo", "result": home}
+        # aborted / lost the way -> fall through to orient + ask for help
     zone = str(pip_state.get("current_zone") or "office")
     result = await return_to_task(label="charger", allow_movement=allow_movement, zone=zone)
     if not result.get("found"):
         rescue = await pip_rescue("my battery is getting low and I can't find my charger. can you help me dock?", priority="high", payload={"battery": battery_safety_summary(body.sensors())})
-        return {"behavior": "return_to_charger", "found": False, "rescue": rescue}
-    return {"behavior": "return_to_charger", "result": result}
+        return {"behavior": "return_to_charger", "via": "orient", "found": False, "rescue": rescue}
+    return {"behavior": "return_to_charger", "via": "orient", "result": result}
 
 
 async def pursue_goal(goal: Goal, *, allow_movement: bool) -> dict:
@@ -2938,6 +3076,12 @@ def _now_minutes() -> int:
 def arbiter_context() -> dict:
     sensors_now = body.sensors()
     battery = battery_safety_summary(sensors_now)
+    # Prefer the debounced, sag-aware estimator over raw percent (audit I-2): it
+    # distinguishes a real flat pack from in-motion voltage sag, and won't trip on
+    # a single dip. critical => charge now; charging => already docked, don't leave.
+    reading = update_battery(sensors_now)
+    battery_recommendation = "charge_before_movement" if reading.critical else battery["recommendation"]
+    battery_percent = reading.soc_percent if reading.soc_percent is not None else sensors_now.get("battery_percent")
     feelings = pip_feelings()
     items = store.list_spatial(200)
     dock_known = explore.nearest_landmark(items, kind="dock") is not None or explore.nearest_landmark(items, label="charg") is not None
@@ -2949,8 +3093,9 @@ def arbiter_context() -> dict:
     return {
         "mode": pip_state.get("mode"),
         "awake": pip_state.get("awake"),
-        "battery_recommendation": battery["recommendation"],
-        "battery_percent": sensors_now.get("battery_percent"),
+        "battery_recommendation": battery_recommendation,
+        "battery_percent": battery_percent,
+        "battery_charging": reading.charging,
         "energy": feelings["energy"],
         "curiosity": feelings["curiosity"],
         "boredom": feelings["boredom"],
