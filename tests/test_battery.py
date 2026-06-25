@@ -71,11 +71,30 @@ def test_estimator_resets_low_run_on_recovery():
     assert est.update(voltage=6.4, motors_active=False).critical is False  # counter reset
 
 
-def test_estimator_detects_charging_trend():
-    est = BatteryEstimator(charge_rise_v=0.05)
-    est.update(voltage=7.2, motors_active=False)
-    rising = est.update(voltage=7.4, motors_active=False)
-    assert rising.charging is True
+def test_estimator_detects_sustained_charging():
+    est = BatteryEstimator(charge_rise_v=0.03, charge_confirm=3)
+    r = None
+    for v in (7.0, 7.2, 7.4, 7.6, 7.8):  # a real charging ramp
+        r = est.update(voltage=v, motors_active=False)
+    assert r.charging is True
+
+
+def test_estimator_no_charging_on_single_sag_rebound():
+    # A low pack that rebounds once after a drive must NOT read as charging, or it
+    # would suppress return-to-charger and strand Pip (safety bug from review).
+    est = BatteryEstimator(charge_rise_v=0.03, charge_confirm=3, critical_v=6.6)
+    est.update(voltage=6.5, motors_active=False)
+    est.update(voltage=6.2, motors_active=True)   # drive (sag, ignored)
+    r = est.update(voltage=6.6, motors_active=False)  # single rebound rise
+    assert r.charging is False
+
+
+def test_estimator_not_charging_while_low_even_if_rising():
+    est = BatteryEstimator(charge_rise_v=0.03, charge_confirm=2, critical_v=6.6)
+    r = None
+    for v in (6.0, 6.2, 6.4):  # rising but still below critical
+        r = est.update(voltage=v, motors_active=False)
+    assert r.charging is False  # never "charging" while genuinely low
 
 
 def test_estimator_none_voltage_is_unknown_not_zero():

@@ -126,11 +126,12 @@ _heartbeat_count = 0
 
 
 def set_last_topo_node(node_id: str | None) -> None:
-    """Update + persist the current place pointer (survives a power cycle)."""
+    """Update + persist the current place pointer (survives a power cycle).
+
+    Persists even on clear (None) so a restart can't resurrect a stale place."""
     global _last_topo_node
     _last_topo_node = node_id
-    if node_id:
-        store.save_json("last_topo_node", node_id)
+    store.save_json("last_topo_node", node_id)
 # Continuous-motion ("cruise") singletons. Tasks only auto-start on hardware with
 # nav.continuous_motion_enabled; the dry-run endpoint works anywhere.
 CRUISE_PARAMS = cruise_mod.cruise_params_from(CONFIG.nav, CONFIG.odometry, CONFIG.safety)
@@ -2148,7 +2149,7 @@ async def pip_cruise(on: bool = False, dry_run: bool = True, zone: str = "cruise
     Movement still flows through grant + armed motors + the authoritative reflex/
     bearing guard; cruise can only choose among safe motions, never relax a stop.
     """
-    global _cruise_stop_event, _perception_task_handle, _cruise_task_handle
+    global _cruise_stop_event, _perception_task_handle, _cruise_task_handle, movement_grant
     if not on and not dry_run:
         # explicit stop
         if _cruise_stop_event is not None:
@@ -2231,7 +2232,11 @@ async def return_home_task(goal: str = "charger", allow_movement: bool = False, 
         action = state.current_action or {}
         for kind, value in topo_exec.edge_motions(action.get("action", "forward"), float(action.get("heading_out", 0.0)), segment_cm=segment_cm):
             if kind == "rotate" and abs(value) >= 1.0:
-                await rotate_step(RotateStepCommand(deg=max(-45.0, min(45.0, value)), require_permission=True))
+                # rotate_step is a single bounded pulse (<=45deg); a 90/180deg edge
+                # must be issued in chunks or the turn is silently truncated and
+                # relocalisation always misses (bug found in review).
+                for step in topo_exec.rotation_chunks(value, max_step=45.0):
+                    await rotate_step(RotateStepCommand(deg=step, require_permission=True))
             elif kind == "forward":
                 await adaptive_forward_stride(value, chunk_cm=6.0, require_permission=True)
         # Relocalise: fingerprint where we ended up and check against the expected node.
@@ -3106,9 +3111,11 @@ async def behavior_return_to_charger(*, allow_movement: bool) -> dict:
     per node); fall back to orient-only, then ask to be docked. Wires the arbiter to
     the real navigator instead of just pointing at the charger (audit I-1)."""
     # Prefer the topo executor when we know where we are and a charger place exists.
-    has_dock = bool(TOPO.node_by_name("charg") or TOPO.node_by_name("dock"))
-    if CONFIG.nav.topo_enabled and _last_topo_node and has_dock:
-        home = await return_home_task(goal="charger", allow_movement=allow_movement)
+    # Pass the MATCHED node's id (a place taught as "dock"/"charg" wouldn't match a
+    # hardcoded goal="charger" — review bug).
+    dock_node = TOPO.node_by_name("charg") or TOPO.node_by_name("dock")
+    if CONFIG.nav.topo_enabled and _last_topo_node and dock_node:
+        home = await return_home_task(goal=dock_node.id, allow_movement=allow_movement)
         if home.get("ok") and not home.get("aborted") and (home.get("done") or not allow_movement):
             return {"behavior": "return_to_charger", "via": "topo", "result": home}
         # aborted / lost the way -> fall through to orient + ask for help

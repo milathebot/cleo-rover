@@ -20,6 +20,7 @@ from rover import service
 from rover.arbiter import BEHAVIOR_RETURN_TO_CHARGER, arbitrate
 from rover.config import RoverConfig, default_config_path
 from rover.models import DriveCommand, TurretCommand
+from rover.topo_map import TopoMap
 
 client = TestClient(service.app)
 
@@ -43,7 +44,8 @@ def test_charging_suppresses_return_to_charger():
 
 # --- I-1: arbiter self-preservation uses the topo traversal limb --------------
 def test_return_to_charger_invokes_topo_navigator(monkeypatch):
-    # Seed a charger place + a current location so the topo path exists.
+    # Isolate the graph (TOPO is a shared singleton across tests).
+    monkeypatch.setattr(service, "TOPO", TopoMap())
     node = service.TOPO.observe(sonar_sig=[100.0, 105.0, 110.0, 115.0, 120.0], now=1.0, name="charger")
     service.set_last_topo_node(node["node_id"])
     called = {}
@@ -54,7 +56,7 @@ def test_return_to_charger_invokes_topo_navigator(monkeypatch):
 
     monkeypatch.setattr(service, "return_home_task", fake_return_home)
     result = asyncio.run(service.behavior_return_to_charger(allow_movement=False))
-    assert called.get("goal") == "charger"
+    assert called.get("goal") == node["node_id"]  # matched node id (not the literal "charger")
     assert result["via"] == "topo"
 
 
@@ -62,6 +64,26 @@ def test_return_to_charger_invokes_topo_navigator(monkeypatch):
 def test_last_topo_node_persists_to_store():
     service.set_last_topo_node("place-test-xyz")
     assert service.store.load_json("last_topo_node") == "place-test-xyz"
+    # Clearing must also persist None (no stale place resurrected on restart).
+    service.set_last_topo_node(None)
+    assert service.store.load_json("last_topo_node") is None
+
+
+# --- review BUG-5: a place taught as "dock" is still driven to (not just "charger")
+def test_return_to_charger_matches_dock_named_node(monkeypatch):
+    monkeypatch.setattr(service, "TOPO", TopoMap())  # only a "dock" node exists
+    node = service.TOPO.observe(sonar_sig=[55.0, 60.0, 65.0, 70.0, 75.0], now=1.0, name="dock")
+    service.set_last_topo_node(node["node_id"])
+    called = {}
+
+    async def fake_return_home(*, goal="charger", allow_movement=False, **kw):
+        called["goal"] = goal
+        return {"ok": True, "done": True, "moved": False}
+
+    monkeypatch.setattr(service, "return_home_task", fake_return_home)
+    result = asyncio.run(service.behavior_return_to_charger(allow_movement=False))
+    assert result["via"] == "topo"
+    assert called["goal"] == node["node_id"]  # matched node id, not the literal "charger"
 
 
 # --- I-3: grant ownership so cruise yields to a foreign task -------------------

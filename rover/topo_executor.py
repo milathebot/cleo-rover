@@ -34,6 +34,18 @@ def edge_motions(action: str, heading_out: float = 0.0, *, segment_cm: float = 4
     return motions
 
 
+def rotation_chunks(deg: float, *, max_step: float = 45.0) -> list[float]:
+    """Split a turn into <=max_step bounded pulses (rotate_step caps at ~45deg, so a
+    90/180deg edge must be issued in chunks or it is silently truncated)."""
+    out: list[float] = []
+    remaining = float(deg)
+    while abs(remaining) >= 1.0:
+        step = max(-max_step, min(max_step, remaining))
+        out.append(step)
+        remaining -= step
+    return out
+
+
 @dataclass
 class ReturnState:
     """Bookkeeping for a multi-hop return: where we are on the path, misses, status."""
@@ -45,6 +57,12 @@ class ReturnState:
     max_misses: int = 3
     done: bool = False
     aborted: bool = False
+
+    def __post_init__(self) -> None:
+        # Already at the goal (single-node route): nothing to traverse, so we're
+        # done -- don't drive off and abort against a None "expected next" (review).
+        if len(self.path) <= 1:
+            self.done = True
 
     @property
     def expected_next(self) -> str | None:

@@ -90,6 +90,7 @@ class BatteryEstimator:
         sag_k: float = 0.0,  # resting ~= measured + sag_k*|duty|; calibrate per pack
         low_debounce: int = 3,
         charge_rise_v: float = 0.05,
+        charge_confirm: int = 3,  # consecutive rising idle samples before "charging"
     ) -> None:
         self.warn_v = warn_v
         self.critical_v = critical_v
@@ -97,8 +98,11 @@ class BatteryEstimator:
         self.sag_k = sag_k
         self.low_debounce = low_debounce
         self.charge_rise_v = charge_rise_v
+        self.charge_confirm = charge_confirm
         self._ema_soc: float | None = None
         self._last_idle_v: float | None = None
+        self._ema_idle_v: float | None = None  # slow baseline to detect a SUSTAINED rise
+        self._rise_run = 0
         self._low_run = 0
         self._charging = False
 
@@ -112,20 +116,27 @@ class BatteryEstimator:
         resting = voltage + (self.sag_k * abs(duty) if motors_active else 0.0)
         inst_soc = voltage_to_soc(resting)
         trusted = not motors_active
+        is_low = resting < self.critical_v
 
         if trusted and inst_soc is not None:
             self._ema_soc = inst_soc if self._ema_soc is None else (1 - self.ema) * self._ema_soc + self.ema * inst_soc
-            if self._last_idle_v is not None:
-                self._charging = (voltage - self._last_idle_v) > self.charge_rise_v
+            # Charging = a SUSTAINED rise above a slow baseline, never while low.
+            # A single post-drive sag rebound is NOT charging (it would otherwise
+            # latch and suppress return-to-charger -- a safety bug found in review).
+            base = voltage if self._ema_idle_v is None else self._ema_idle_v
+            rising = (voltage - base) > self.charge_rise_v
+            self._rise_run = self._rise_run + 1 if rising else 0
+            self._ema_idle_v = 0.9 * base + 0.1 * voltage
+            self._charging = self._rise_run >= self.charge_confirm and not is_low
             self._last_idle_v = voltage
 
         # Debounced critical: only idle samples below the trip advance the counter.
-        if trusted and resting is not None and resting < self.critical_v:
+        if trusted and is_low:
             self._low_run += 1
         else:
             self._low_run = 0
         critical = self._low_run >= self.low_debounce
-        warn = resting is not None and resting < self.warn_v
+        warn = resting < self.warn_v
 
         smoothed = round(self._ema_soc, 1) if self._ema_soc is not None else inst_soc
         note = "charging" if self._charging else ("critical" if critical else ("low" if warn else "ok"))

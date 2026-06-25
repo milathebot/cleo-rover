@@ -2,8 +2,26 @@
 
 from __future__ import annotations
 
-from rover.topo_executor import ReturnState, edge_motions, plan_return
+from rover.topo_executor import ReturnState, edge_motions, plan_return, rotation_chunks
 from rover.topo_map import TopoMap
+
+
+def test_rotation_chunks_split_big_turns():
+    # A 90deg turn must become two <=45deg pulses that sum to 90 (else truncated).
+    chunks = rotation_chunks(90.0, max_step=45.0)
+    assert all(abs(c) <= 45.0 for c in chunks)
+    assert abs(sum(chunks) - 90.0) < 1e-6
+    assert len(chunks) == 2
+    assert rotation_chunks(180.0, max_step=45.0) == [45.0, 45.0, 45.0, 45.0]
+    assert rotation_chunks(-90.0, max_step=45.0) == [-45.0, -45.0]
+    assert rotation_chunks(0.0) == []
+    assert rotation_chunks(20.0) == [20.0]
+
+
+def test_single_node_route_is_already_done():
+    st = ReturnState(path=["charger"], actions=[])  # already at the goal
+    assert st.done is True
+    assert st.expected_next is None
 
 
 def test_edge_motions_turn_then_forward():
