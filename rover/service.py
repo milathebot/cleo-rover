@@ -1668,8 +1668,8 @@ def pip_hermes_bridge_status() -> dict:
     return {
         "ok": True,
         "configured": hermes_configured(),
-        "base": os.getenv("HERMES_API_BASE", ""),
-        "model": os.getenv("HERMES_MODEL", "hermes-agent"),
+        "base": os.getenv("HERMES_API_BASE") or os.getenv("CLEO_ROVER_HERMES_API_BASE") or "",
+        "model": os.getenv("HERMES_MODEL") or os.getenv("CLEO_ROVER_HERMES_MODEL") or "hermes-agent",
         "speak_response": os.getenv("HERMES_PIP_SPEAK_RESPONSE", "true"),
     }
 
@@ -1770,7 +1770,7 @@ async def pip_command(command: PipCommand) -> dict:
         "prompt": command.text,
         "context": hermes_context,
         "bridge": hermes,
-        "note": "Set HERMES_API_BASE/HERMES_API_KEY on cleo-rover-body to let Pip ask Hermes automatically, then speak the answer.",
+        "note": "Set HERMES_API_BASE/HERMES_API_KEY (or CLEO_ROVER_HERMES_API_BASE/_API_KEY) on cleo-rover-body to let Pip ask Hermes automatically, then speak the answer.",
     }
 
 

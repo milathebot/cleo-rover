@@ -13,7 +13,7 @@ DEFAULT_SYSTEM_PROMPT = pip_soul_prompt()
 
 
 def hermes_configured() -> bool:
-    return bool(os.getenv("HERMES_API_BASE"))
+    return bool(os.getenv("HERMES_API_BASE") or os.getenv("CLEO_ROVER_HERMES_API_BASE"))
 
 
 def _api_url(base: str) -> str:
@@ -28,18 +28,19 @@ def _api_url(base: str) -> str:
 def ask_hermes_as_pip(prompt: str, *, context: dict[str, Any], timeout: float = 45.0) -> dict[str, Any]:
     """Call an OpenAI-compatible Hermes API server for Pip's spoken reply.
 
-    Configure with:
-      HERMES_API_BASE=http://host:8642/v1
-      HERMES_API_KEY=...
-      HERMES_MODEL=hermes-agent
+    Configure with HERMES_API_BASE/_API_KEY/_MODEL, or the project-prefixed
+    CLEO_ROVER_HERMES_* names the Telegram agent + vision-label already use:
+      HERMES_API_BASE=http://host:8642/v1   (or CLEO_ROVER_HERMES_API_BASE)
+      HERMES_API_KEY=...                     (or CLEO_ROVER_HERMES_API_KEY)
+      HERMES_MODEL=hermes-agent              (or CLEO_ROVER_HERMES_MODEL)
     """
 
-    base = os.getenv("HERMES_API_BASE", "").strip()
+    base = (os.getenv("HERMES_API_BASE") or os.getenv("CLEO_ROVER_HERMES_API_BASE") or "").strip()
     if not base:
-        return {"ok": False, "configured": False, "error": "HERMES_API_BASE is not set"}
+        return {"ok": False, "configured": False, "error": "HERMES_API_BASE / CLEO_ROVER_HERMES_API_BASE is not set"}
 
-    key = os.getenv("HERMES_API_KEY", "").strip()
-    model = os.getenv("HERMES_MODEL", "hermes-agent").strip() or "hermes-agent"
+    key = (os.getenv("HERMES_API_KEY") or os.getenv("CLEO_ROVER_HERMES_API_KEY") or "").strip()
+    model = (os.getenv("HERMES_MODEL") or os.getenv("CLEO_ROVER_HERMES_MODEL") or "hermes-agent").strip() or "hermes-agent"
     max_tokens = int(os.getenv("HERMES_PIP_MAX_TOKENS", "220"))
     system_prompt = os.getenv("HERMES_PIP_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
 

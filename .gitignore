@@ -5,3 +5,5 @@ __pycache__/
 data/*.sqlite
 data/*.sqlite-*
 *.egg-info/
+# Per-robot tuned configs (calibration + motion-safety values) — never commit.
+config/*.local.json

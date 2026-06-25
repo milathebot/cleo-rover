@@ -10,10 +10,13 @@ acting safely when the mind is slow, offline, or returns junk.
 The mind NEVER emits motor PWM and can NEVER relax a safety guard. It chooses
 among already-safe options and supplies Pip's voice/mood.
 
-Config (env, never committed):
-  HERMES_API_BASE / HERMES_API_KEY / HERMES_MODEL   (existing Hermes bridge)
+Config (env, never committed); first set wins, in this order:
   MIND_API_BASE  / MIND_API_KEY  / MIND_MODEL       (optional override; e.g. point
     at Claude via an OpenAI-compatible gateway)
+  HERMES_API_BASE / HERMES_API_KEY / HERMES_MODEL   (Hermes bridge)
+  CLEO_ROVER_HERMES_API_BASE / _API_KEY / _MODEL    (project-prefixed; the SAME names
+    the Telegram agent + vision-label already use, so one cred set configures the
+    whole rover)
 """
 
 from __future__ import annotations
@@ -48,13 +51,17 @@ INTENT_INSTRUCTIONS = (
 
 
 def mind_configured() -> bool:
-    return bool(os.getenv("MIND_API_BASE") or os.getenv("HERMES_API_BASE"))
+    return bool(
+        os.getenv("MIND_API_BASE")
+        or os.getenv("HERMES_API_BASE")
+        or os.getenv("CLEO_ROVER_HERMES_API_BASE")
+    )
 
 
 def _endpoint() -> tuple[str, str, str]:
-    base = (os.getenv("MIND_API_BASE") or os.getenv("HERMES_API_BASE") or "").strip()
-    key = (os.getenv("MIND_API_KEY") or os.getenv("HERMES_API_KEY") or "").strip()
-    model = (os.getenv("MIND_MODEL") or os.getenv("HERMES_MODEL") or "hermes-agent").strip() or "hermes-agent"
+    base = (os.getenv("MIND_API_BASE") or os.getenv("HERMES_API_BASE") or os.getenv("CLEO_ROVER_HERMES_API_BASE") or "").strip()
+    key = (os.getenv("MIND_API_KEY") or os.getenv("HERMES_API_KEY") or os.getenv("CLEO_ROVER_HERMES_API_KEY") or "").strip()
+    model = (os.getenv("MIND_MODEL") or os.getenv("HERMES_MODEL") or os.getenv("CLEO_ROVER_HERMES_MODEL") or "hermes-agent").strip() or "hermes-agent"
     return base, key, model
 
 
@@ -132,7 +139,7 @@ def ask_mind_for_intent(*, packet: dict[str, Any], soul_prompt: str, max_tokens:
     """Ask the LLM for one validated-shape intent. Returns {ok, intent|error}."""
     base, key, model = _endpoint()
     if not base:
-        return {"ok": False, "configured": False, "error": "no MIND_API_BASE/HERMES_API_BASE"}
+        return {"ok": False, "configured": False, "error": "no MIND_API_BASE/HERMES_API_BASE/CLEO_ROVER_HERMES_API_BASE"}
     context = json.dumps(packet, sort_keys=True, default=str)[:5000]
     payload = {
         "model": model,

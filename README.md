@@ -433,16 +433,25 @@ cleo-rover-brain --supervised-body --zone office --once
 
 ## Hardware mode operating rule
 
+The live body service is **`cleo-rover-body.service`** (restart it with
+`sudo systemctl restart cleo-rover-body`; logs `journalctl -u cleo-rover-body -f`).
+The `set_rover_profile.sh` helper drives that unit.
+
 Normal powered-on operation should use the no-motor presence profile:
 
 ```bash
 sudo scripts/set_rover_profile.sh presence
 ```
 
-Only switch to the floor-cautious motor profile after the rover is on the floor, the area is clear, and movement is intentionally armed:
+Only switch to a motor profile after the rover is on the floor, the area is clear, and movement is intentionally armed:
 
 ```bash
-sudo scripts/set_rover_profile.sh floor-cautious
+sudo scripts/set_rover_profile.sh floor-cautious   # tracked default profile
+sudo scripts/set_rover_profile.sh local            # your per-robot tuned config (rover.hardware.local.json)
 ```
+
+If you run a per-robot tuned `config/rover.hardware.local.json`, change motion
+safety by editing that file and restarting the service — not via the two stock
+profiles, which would swap you off your calibration.
 
 The stock Freenove motor/servo board has a Cleo-native driver. Motor output must remain gated by profile safety, movement grants, short command durations, and front-distance checks.

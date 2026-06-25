@@ -17,9 +17,9 @@ fi
 
 cat > "$SUDOERS_FILE" <<EOF
 # Allow the Telegram agent user to switch Cleo Rover only between audited rover profiles.
-$USER_NAME ALL=(root) NOPASSWD: $SCRIPT presence, $SCRIPT floor-cautious
+$USER_NAME ALL=(root) NOPASSWD: $SCRIPT presence, $SCRIPT floor-cautious, $SCRIPT local
 EOF
 chmod 440 "$SUDOERS_FILE"
 visudo -cf "$SUDOERS_FILE"
 
-echo "Installed sudoers rule for $USER_NAME to run $SCRIPT presence|floor-cautious without a password."
+echo "Installed sudoers rule for $USER_NAME to run $SCRIPT presence|floor-cautious|local without a password."

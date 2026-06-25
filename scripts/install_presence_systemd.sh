@@ -16,9 +16,9 @@ fi
 cat > "$SERVICE" <<EOF
 [Unit]
 Description=Cleo Rover non-driving presence loop
-After=network-online.target cleo-rover.service
+After=network-online.target cleo-rover-body.service
 Wants=network-online.target
-Requires=cleo-rover.service
+Requires=cleo-rover-body.service
 
 [Service]
 Type=simple
