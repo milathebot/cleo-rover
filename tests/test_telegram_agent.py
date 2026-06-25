@@ -57,6 +57,16 @@ def test_parse_pip_safe_commands():
     assert argv == ["cleo-rover", "vision-label", "--zone", "office", "--speak", "--compact"]
 
 
+def test_parse_say_joins_multiword_text_into_single_arg():
+    argv, error = parse_rover_command("/rover say hello there pip")
+    assert error is None
+    assert argv == ["cleo-rover", "say", "hello there pip"]
+
+    argv, error = parse_rover_command("/rover say")
+    assert argv is None
+    assert error is not None and "Usage" in error
+
+
 def test_parse_floor_precheck_and_estop():
     argv, error = parse_rover_command("/rover floor-precheck --zone living-room")
     assert error is None

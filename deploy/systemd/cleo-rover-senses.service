@@ -1,3 +1,5 @@
+# Example unit for the senses daemon (mic/voice + camera event streaming).
+# Adjust User=/paths to match your install; the body service must be running.
 [Unit]
 Description=Cleo Rover senses daemon
 After=cleo-rover-body.service
@@ -5,6 +7,7 @@ Requires=cleo-rover-body.service
 
 [Service]
 Type=simple
+User=pi
 WorkingDirectory=/home/pi/cleo-rover
 ExecStart=/home/pi/cleo-rover/.venv/bin/cleo-rover-senses --interval 2
 Restart=always

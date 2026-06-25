@@ -36,9 +36,11 @@ def _cpu_temp_c() -> float | None:
 
 
 def _load_average() -> list[float] | None:
+    # os.getloadavg() is Unix-only (raises AttributeError on Windows dev hosts);
+    # the Pi has it. Fail soft so the service/doctor work cross-platform.
     try:
         return [round(value, 2) for value in os.getloadavg()]
-    except OSError:
+    except (OSError, AttributeError):
         return None
 
 
