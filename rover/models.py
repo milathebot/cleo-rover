@@ -152,7 +152,8 @@ class HallwayScoutCommand(BaseModel):
     stride_chunk_cm: float = Field(default=6.0, ge=1.0, le=16.0)
     clear_cm: float = Field(default=75.0, ge=35.0, le=220.0)
     blocked_cm: float = Field(default=55.0, ge=30.0, le=140.0)
-    scan_angles: list[float] = Field(default_factory=lambda: [-70, -45, -25, 0, 25, 45, 70], max_length=9)
+    # Avoid turret extremes that can clip Pip's shell; use ~85% of physical pan range.
+    scan_angles: list[float] = Field(default_factory=lambda: [-60, -40, -20, 0, 20, 40, 60], max_length=9)
     pause_seconds: float = Field(default=1.0, ge=0.0, le=8.0)
     speak: bool = False
     compact: bool = True

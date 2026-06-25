@@ -1698,11 +1698,25 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
             extend_active_movement_grant(20)
             action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"front blocked {front_value:.1f}cm")
         elif center_distance is not None and center_distance < command.clear_cm:
-            blocked_streak += 1
-            if command.speak:
-                actions.append({"kind": "speech", "cycle": cycle, "result": speak_text("Doorway is close. I am scanning before I move.")})
-            extend_active_movement_grant(20)
-            action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"center not clear {center_distance:.1f}cm")
+            # Near doorway/open door panels should not create an endless scan-turn loop.
+            # If the center is above the hard blocked band and no off-axis bearing is
+            # much better, creep forward with a short adaptive stride. Turn only when
+            # the scan clearly shows a better opening to one side.
+            better_side_opening = best_bearing is not None and best_distance is not None and abs(best_bearing) >= 18.0 and best_distance > center_distance + 25.0
+            if center_distance > command.blocked_cm + 10.0 and not better_side_opening:
+                blocked_streak = 0
+                planned_step = command.min_step_cm if command.adaptive_step else min(command.step_cm, command.min_step_cm)
+                if command.speak:
+                    actions.append({"kind": "speech", "cycle": cycle, "result": speak_text(f"Doorway is close but open. Creeping forward about {planned_step:.0f} centimeters.")})
+                extend_active_movement_grant(20)
+                move = await adaptive_forward_stride(planned_step, chunk_cm=min(command.stride_chunk_cm, planned_step), require_permission=True, brake_cm=command.blocked_cm)
+                action = {"kind": "doorway-creep", "planned_step_cm": planned_step, "result": move}
+            else:
+                blocked_streak += 1
+                if command.speak:
+                    actions.append({"kind": "speech", "cycle": cycle, "result": speak_text("Doorway is close. I am scanning before I move.")})
+                extend_active_movement_grant(20)
+                action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"center not clear {center_distance:.1f}cm")
         elif best_bearing is not None and best_distance is not None and abs(best_bearing) >= 18.0 and best_distance > (center_distance or 0.0) + 25.0:
             blocked_streak += 1
             if command.speak:

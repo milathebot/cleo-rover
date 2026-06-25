@@ -198,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     hallway_scout.add_argument("--clear-cm", type=float, default=75.0)
     hallway_scout.add_argument("--blocked-cm", type=float, default=55.0)
     hallway_scout.add_argument("--pause-seconds", type=float, default=1.0)
+    hallway_scout.add_argument("--scan-angles", default="-60,-40,-20,0,20,40,60", help="Comma-separated turret pan angles; defaults avoid shell-clipping extremes")
     hallway_scout.add_argument("--speak", action="store_true")
     hallway_scout.add_argument("--verbose", action="store_true")
     hallway_scout.add_argument("--notes", default=None)
@@ -437,6 +438,7 @@ def main(argv: list[str] | None = None) -> int:
                 "clear_cm": args.clear_cm,
                 "blocked_cm": args.blocked_cm,
                 "pause_seconds": args.pause_seconds,
+                "scan_angles": [float(x.strip()) for x in args.scan_angles.split(",") if x.strip()] if args.scan_angles else None,
                 "speak": args.speak,
                 "compact": not args.verbose,
                 "notes": args.notes,
