@@ -6,7 +6,11 @@ Pip on the real Raspberry Pi 4B + Freenove FNK0043 chassis).
 the architecture, the safety contract you must never break, how to bring Pip to
 life on hardware, the exact API you drive it through, and how to keep it alive.
 
-Read this fully before issuing any command that can move the robot.
+Read this **once** before you first operate Pip's motion (and re-skim after a pull
+that changes it). You do **not** re-read it per command — the per-action safety
+checks are enforced at runtime by the Pi (grant + armed motors + the calibration
+gate + the reflex), not by re-reading this doc. For the exact cold-boot → alive
+sequence, follow [`docs/POWERUP_RUNBOOK.md`](docs/POWERUP_RUNBOOK.md).
 
 ---
 
@@ -64,6 +68,11 @@ trouble; ignore it and you will be (correctly) refused.
 ---
 
 ## 2. Hard rules — do not violate
+
+These exist for concrete reasons (one turret-mounted sonar, open-loop motion, no
+encoders), so apply them with judgment rather than as rote ceremony — the *why* is
+given inline. The Pi enforces them at runtime; you don't need to re-derive them per
+command.
 
 1. **Never assume a command moved the robot.** Read state back; honor refusals.
 2. **Movement requires three things simultaneously:** an *active movement grant*,
