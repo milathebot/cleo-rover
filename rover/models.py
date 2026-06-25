@@ -195,6 +195,23 @@ class ReactiveExploreCommand(BaseModel):
     notes: str | None = Field(default=None, max_length=240)
 
 
+class LineFollowCommand(BaseModel):
+    zone: str = Field(default="line", max_length=80)
+    allow_movement: bool = False
+    duration_seconds: int = Field(default=30, ge=1, le=300)
+    max_cycles: int = Field(default=40, ge=1, le=200)
+    base_linear: float = Field(default=0.22, ge=0.0, le=0.5)
+    kp: float = Field(default=0.45, ge=0.0, le=2.0)
+    kd: float = Field(default=0.15, ge=0.0, le=2.0)
+    # Digital value that means "this sensor is over the line". Verify on hardware.
+    line_on_value: int = Field(default=1, ge=0, le=1)
+    step_ms: int = Field(default=140, ge=60, le=400)
+    decision_pause_ms: int = Field(default=60, ge=10, le=300)
+    lost_stop_cycles: int = Field(default=6, ge=1, le=30)
+    compact: bool = True
+    notes: str | None = Field(default=None, max_length=240)
+
+
 class VisionAwarenessCommand(BaseModel):
     zone: str = Field(default="office", max_length=80)
     capture: bool = True

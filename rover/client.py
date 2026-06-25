@@ -204,6 +204,14 @@ def main(argv: list[str] | None = None) -> int:
     hallway_scout.add_argument("--verbose", action="store_true")
     hallway_scout.add_argument("--notes", default=None)
 
+    line_follow = sub.add_parser("line-follow")
+    line_follow.add_argument("--zone", default="line")
+    line_follow.add_argument("--allow-movement", action="store_true")
+    line_follow.add_argument("--duration-seconds", type=int, default=30)
+    line_follow.add_argument("--max-cycles", type=int, default=40)
+    line_follow.add_argument("--base-linear", type=float, default=0.22)
+    line_follow.add_argument("--line-on-value", type=int, default=1)
+
     sub.add_parser("movement-status")
     sub.add_parser("movement-revoke")
     sub.add_parser("supervisor-status")
@@ -454,6 +462,16 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "GET", "/autonomy/state")
     elif args.cmd == "tick":
         result = request(args.base, "POST", "/autonomy/tick", {"allow_movement": False, "inject_idle_tick": True})
+    elif args.cmd == "line-follow":
+        timeout = max(30.0, args.duration_seconds + 15.0)
+        result = request(args.base, "POST", "/tasks/line-follow", {
+            "zone": args.zone,
+            "allow_movement": args.allow_movement,
+            "duration_seconds": args.duration_seconds,
+            "max_cycles": args.max_cycles,
+            "base_linear": args.base_linear,
+            "line_on_value": args.line_on_value,
+        }, timeout=timeout)
     elif args.cmd == "movement-status":
         result = request(args.base, "GET", "/movement/status")
     elif args.cmd == "movement-revoke":

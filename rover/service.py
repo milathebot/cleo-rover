@@ -30,7 +30,8 @@ from .navigation import (
 from .odometry import estimate_chunk_distance_cm, motion_model_from
 from . import vision_service
 from . import voice_daemon
-from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, HallwayScoutCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
+from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, HallwayScoutCommand, LineFollowCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
+from .line_follow import decide_line_follow, search_turn
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
 from .pip_brain import build_pip_brain
 from .pip_soul import PIP_SOUL_VERSION, pip_soul_prompt, pip_soul_public
@@ -1986,6 +1987,81 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
         "final_front_distance_cm": final_sensors.get("front_distance_cm"),
         "safety": "Adaptive route strides executed as short chunks, stop after every chunk, ultrasonic checks and range-scan before movement, scan+turn when center is not clear, camera/Hermes context at configured intervals.",
         "actions": compact_plan(actions) if command.compact else actions,
+    }
+
+
+@app.post("/tasks/line-follow")
+async def line_follow_task(command: LineFollowCommand) -> dict:
+    """Gentle indoor line-follow with the 3 IR sensors.
+
+    The cliff (downward IR), ultrasonic, and bumper reflexes always pre-empt line
+    following — a fresh reflex stops the task. Movement stays gated by a grant +
+    armed motors, so this is bench-safe by default.
+    """
+    global movement_grant
+    grant = MovementPermissionCommand(
+        task=f"line-follow:{command.zone}",
+        allow_movement=command.allow_movement,
+        duration_seconds=command.duration_seconds,
+        max_linear=max(0.1, command.base_linear),
+        max_turn=0.65,
+        notes=command.notes or "gentle indoor line follow",
+    )
+    movement_grant = grant.model_dump() | {"expires_at": time.time() + grant.duration_seconds, "active": grant.allow_movement}
+    event = store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="line_follow", label=grant.task, payload=movement_grant | {"zone": command.zone}))
+    events.add(event)
+    plan: list[dict] = []
+    deadline = time.time() + command.duration_seconds
+    prev_error = 0.0
+    lost_streak = 0
+    for cycle in range(1, command.max_cycles + 1):
+        if time.time() >= deadline:
+            plan.append({"kind": "halt", "reason": "duration elapsed"})
+            break
+        # Safety reflexes (cliff/obstacle/bump) pre-empt line following.
+        fresh_reflex = body.consume_reflex_stop()
+        if fresh_reflex:
+            await body.stop()
+            plan.append({"kind": "reflex-stop", "cycle": cycle, "result": fresh_reflex})
+            break
+        sensors_now = body.sensors()
+        line = sensors_now.get("line_sensors")
+        if not isinstance(line, dict):
+            plan.append({"kind": "no-line-sensors", "cycle": cycle})
+            break
+        decision = decide_line_follow(line, on_value=command.line_on_value, kp=command.kp, kd=command.kd, prev_error=prev_error, base_linear=command.base_linear)
+        if decision["lost"]:
+            lost_streak += 1
+            await body.stop()
+            plan.append({"kind": "line-lost", "cycle": cycle, "lost_streak": lost_streak})
+            if lost_streak >= command.lost_stop_cycles:
+                plan.append({"kind": "stop", "reason": "line lost"})
+                break
+            if command.allow_movement:
+                extend_active_movement_grant(8)
+                await guarded_drive(DriveCommand(linear=0.0, turn=search_turn(prev_error), duration_ms=150), require_permission=True)
+            await asyncio.sleep(command.decision_pause_ms / 1000)
+            continue
+        lost_streak = 0
+        prev_error = decision["error"]
+        if command.allow_movement:
+            extend_active_movement_grant(8)
+            drive = await guarded_drive(DriveCommand(linear=decision["linear"], turn=decision["turn"], duration_ms=command.step_ms), require_permission=True)
+            plan.append({"kind": "follow", "cycle": cycle, "decision": decision, "drive_ok": drive.get("ok")})
+        else:
+            plan.append({"kind": "follow-sim", "cycle": cycle, "decision": decision})
+        await asyncio.sleep(command.decision_pause_ms / 1000)
+    await body.stop()
+    counts: dict[str, int] = {}
+    for item in plan:
+        counts[item["kind"]] = counts.get(item["kind"], 0) + 1
+    return {
+        "ok": True,
+        "task": movement_grant | {"zone": command.zone},
+        "counts": counts,
+        "event": event.model_dump(),
+        "plan": ([{"kind": item["kind"], "cycle": item.get("cycle")} for item in plan] if command.compact else plan),
+        "safety": "Cliff/ultrasonic/bumper reflexes pre-empt line follow; movement gated by grant + armed motors.",
     }
 
 
