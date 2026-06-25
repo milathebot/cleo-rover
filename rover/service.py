@@ -16,7 +16,7 @@ from .config import load_config
 from .drivers import RoverBody
 from .hermes_bridge import ask_hermes_as_pip, hermes_configured
 from .hub import fetch_hub_snapshot
-from .mapping import map_summary, observation_items, scan_item, semantic_events_from_analysis
+from .mapping import map_summary, normalize_distance_cm, observation_items, scan_item, semantic_events_from_analysis
 from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, HallwayScoutCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
 from .pip_brain import build_pip_brain
@@ -545,57 +545,61 @@ def situation() -> dict:
 @app.post("/map/scan")
 async def map_scan(command: MapScanCommand) -> dict:
     observations = []
-    for angle in command.angles:
-        clamped = max(CONFIG.turret.pan_min_deg, min(CONFIG.turret.pan_max_deg, float(angle)))
-        await body.set_turret(TurretCommand(pan_deg=clamped))
-        await asyncio.sleep(command.settle_ms / 1000)
-        sensors_now = body.sensors()
-        distance_cm = sensors_now.get("front_distance_cm")
-        item = scan_item(command.zone, clamped, distance_cm, payload={"sensors": sensors_now})
-        saved_item = store.upsert_spatial(item)
-        event = store.add_event(
-            RoverEvent(
-                kind=RoverEventKind.map_observation,
-                source="map_scan",
-                label=f"{command.zone} {clamped:+.1f} deg",
-                value=distance_cm,
-                payload={"zone": command.zone, "bearing_deg": clamped, "distance_cm": distance_cm, "sensors": sensors_now},
-            )
-        )
-        events.add(event)
-        observations.append({"event": event.model_dump(), "item": saved_item.model_dump()})
-    await body.set_turret(TurretCommand(pan_deg=0))
     capture = None
-    if command.snapshot_center:
-        capture = capture_camera_snapshot(CONFIG.camera.capture_dir, width=CONFIG.camera.width, height=CONFIG.camera.height) if body.mode == "hardware" else None
-    return {"ok": True, "zone": command.zone, "observations": observations, "capture": capture}
+    try:
+        for angle in command.angles:
+            clamped = max(CONFIG.turret.pan_min_deg, min(CONFIG.turret.pan_max_deg, float(angle)))
+            await body.set_turret(TurretCommand(pan_deg=clamped))
+            await asyncio.sleep(command.settle_ms / 1000)
+            sensors_now = body.sensors()
+            distance_cm = normalize_distance_cm(sensors_now.get("front_distance_cm"))
+            item = scan_item(command.zone, clamped, distance_cm, payload={"sensors": sensors_now})
+            saved_item = store.upsert_spatial(item)
+            event = store.add_event(
+                RoverEvent(
+                    kind=RoverEventKind.map_observation,
+                    source="map_scan",
+                    label=f"{command.zone} {clamped:+.1f} deg",
+                    value=distance_cm,
+                    payload={"zone": command.zone, "bearing_deg": clamped, "distance_cm": distance_cm, "sensors": sensors_now},
+                )
+            )
+            events.add(event)
+            observations.append({"event": event.model_dump(), "item": saved_item.model_dump()})
+        if command.snapshot_center:
+            capture = capture_camera_snapshot(CONFIG.camera.capture_dir, width=CONFIG.camera.width, height=CONFIG.camera.height) if body.mode == "hardware" else None
+        return {"ok": True, "zone": command.zone, "observations": observations, "capture": capture}
+    finally:
+        await body.set_turret(TurretCommand(pan_deg=0))
 
 
 @app.post("/map/visual-scan")
 async def visual_map_scan(command: VisualMapScanCommand) -> dict:
     observations = []
-    for angle in command.angles:
-        clamped = max(CONFIG.turret.pan_min_deg, min(CONFIG.turret.pan_max_deg, float(angle)))
-        await body.set_turret(TurretCommand(pan_deg=clamped))
-        await asyncio.sleep(command.settle_ms / 1000)
-        sensors_now = body.sensors()
-        distance_cm = sensors_now.get("front_distance_cm")
-        capture = capture_camera_snapshot(CONFIG.camera.capture_dir, width=CONFIG.camera.width, height=CONFIG.camera.height) if body.mode == "hardware" and command.capture_each_angle else None
-        item = scan_item(command.zone, clamped, distance_cm, payload={"sensors": sensors_now, "capture": capture})
-        saved_item = store.upsert_spatial(item)
-        event = store.add_event(
-            RoverEvent(
-                kind=RoverEventKind.map_observation,
-                source="visual_map_scan",
-                label=f"{command.zone} visual {clamped:+.1f} deg",
-                value=distance_cm,
-                payload={"zone": command.zone, "bearing_deg": clamped, "distance_cm": distance_cm, "sensors": sensors_now, "capture": capture, "needs_external_vision": True},
+    try:
+        for angle in command.angles:
+            clamped = max(CONFIG.turret.pan_min_deg, min(CONFIG.turret.pan_max_deg, float(angle)))
+            await body.set_turret(TurretCommand(pan_deg=clamped))
+            await asyncio.sleep(command.settle_ms / 1000)
+            sensors_now = body.sensors()
+            distance_cm = normalize_distance_cm(sensors_now.get("front_distance_cm"))
+            capture = capture_camera_snapshot(CONFIG.camera.capture_dir, width=CONFIG.camera.width, height=CONFIG.camera.height) if body.mode == "hardware" and command.capture_each_angle else None
+            item = scan_item(command.zone, clamped, distance_cm, payload={"sensors": sensors_now, "capture": capture})
+            saved_item = store.upsert_spatial(item)
+            event = store.add_event(
+                RoverEvent(
+                    kind=RoverEventKind.map_observation,
+                    source="visual_map_scan",
+                    label=f"{command.zone} visual {clamped:+.1f} deg",
+                    value=distance_cm,
+                    payload={"zone": command.zone, "bearing_deg": clamped, "distance_cm": distance_cm, "sensors": sensors_now, "capture": capture, "needs_external_vision": True},
+                )
             )
-        )
-        events.add(event)
-        observations.append({"event": event.model_dump(), "item": saved_item.model_dump(), "capture": capture})
-    await body.set_turret(TurretCommand(pan_deg=0))
-    return {"ok": True, "zone": command.zone, "observations": observations, "needs_external_vision": True}
+            events.add(event)
+            observations.append({"event": event.model_dump(), "item": saved_item.model_dump(), "capture": capture})
+        return {"ok": True, "zone": command.zone, "observations": observations, "needs_external_vision": True}
+    finally:
+        await body.set_turret(TurretCommand(pan_deg=0))
 
 
 @app.post("/presence/look-around")

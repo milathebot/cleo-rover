@@ -18,10 +18,25 @@ def slugify(value: str, fallback: str = "item") -> str:
     return slug or fallback
 
 
-def distance_cm_to_m(distance_cm: float | None) -> float | None:
+def normalize_distance_cm(distance_cm: float | None) -> float | None:
     if distance_cm is None:
         return None
-    return round(float(distance_cm) / 100.0, 3)
+    try:
+        value = float(distance_cm)
+    except (TypeError, ValueError):
+        return None
+    # gpiozero/HC-SR04 occasionally emits impossible negative readings during
+    # turret motion or echo timeouts. Treat those as unknown, not as real map data.
+    if value < 0:
+        return None
+    return value
+
+
+def distance_cm_to_m(distance_cm: float | None) -> float | None:
+    value = normalize_distance_cm(distance_cm)
+    if value is None:
+        return None
+    return round(value / 100.0, 3)
 
 
 def classify_label(label: str) -> str:
@@ -39,6 +54,7 @@ def classify_label(label: str) -> str:
 
 def scan_item(zone: str, bearing_deg: float, distance_cm: float | None, payload: dict[str, Any] | None = None) -> SpatialMemoryItem:
     now = time.time()
+    distance_cm = normalize_distance_cm(distance_cm)
     distance_label = "unknown" if distance_cm is None else f"{distance_cm:.1f}cm"
     safe_zone = slugify(zone, "floor")
     bearing_key = str(round(float(bearing_deg), 1)).replace("-", "m").replace(".", "p")
