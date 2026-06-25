@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -17,6 +18,9 @@ FREENOVE_RGB_SPI_BUS = 0
 FREENOVE_RGB_SPI_DEVICE = 0
 FREENOVE_RGB_ORDER = "GRB"
 FREENOVE_RGB_BRIGHTNESS = 24
+
+_DISTANCE_SENSOR_LOCK = threading.Lock()
+_DISTANCE_SENSOR: Any | None = None
 
 
 def _import_smbus() -> Any:
@@ -84,15 +88,16 @@ class FreenoveSensorReader:
                 device.close()
 
     def read_front_distance_cm(self) -> float | None:
+        # Keep one gpiozero DistanceSensor per service process. Creating/closing it
+        # for every watchdog/sensors request can race with concurrent calls and leave
+        # GPIO22/27 claimed, which disables the safety preflight exactly when we need it.
+        global _DISTANCE_SENSOR
         _, DistanceSensor = _import_gpiozero()
-        sensor = None
-        try:
-            sensor = DistanceSensor(echo=22, trigger=27, max_distance=3.0)
-            time.sleep(0.05)
-            return round(float(sensor.distance) * 100, 1)
-        finally:
-            if sensor is not None:
-                sensor.close()
+        with _DISTANCE_SENSOR_LOCK:
+            if _DISTANCE_SENSOR is None:
+                _DISTANCE_SENSOR = DistanceSensor(echo=22, trigger=27, max_distance=3.0)
+                time.sleep(0.08)
+            return round(float(_DISTANCE_SENSOR.distance) * 100, 1)
 
     def read_adc(self) -> dict[int, float]:
         adc = ADS7830(voltage_coefficient=self.adc_voltage_coefficient)
