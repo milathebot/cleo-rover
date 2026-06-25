@@ -148,8 +148,8 @@ class HallwayScoutCommand(BaseModel):
     adaptive_step: bool = True
     step_cm: float = Field(default=4.0, ge=1.0, le=30.0)
     min_step_cm: float = Field(default=2.0, ge=1.0, le=10.0)
-    max_step_cm: float = Field(default=24.0, ge=2.0, le=60.0)
-    stride_chunk_cm: float = Field(default=6.0, ge=1.0, le=10.0)
+    max_step_cm: float = Field(default=24.0, ge=2.0, le=90.0)
+    stride_chunk_cm: float = Field(default=6.0, ge=1.0, le=16.0)
     clear_cm: float = Field(default=75.0, ge=35.0, le=220.0)
     blocked_cm: float = Field(default=55.0, ge=30.0, le=140.0)
     scan_angles: list[float] = Field(default_factory=lambda: [-70, -45, -25, 0, 25, 45, 70], max_length=9)

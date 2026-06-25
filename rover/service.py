@@ -633,7 +633,7 @@ async def move_step(command: MoveStepCommand) -> dict:
     # under-travelled badly: requested 24cm produced only a few cm of motion.
     # Keep the duty below the floor-cautious grant, but give each cm more time.
     linear = 0.38 if command.forward_cm >= 0 else -0.32
-    duration = int(min(650, max(260, abs(command.forward_cm) * 95)))
+    duration = int(min(850, max(260, abs(command.forward_cm) * 95)))
     result = await guarded_drive(DriveCommand(linear=linear, turn=0, duration_ms=duration), require_permission=command.require_permission)
     result["step"] = command.model_dump()
     return result
@@ -670,7 +670,7 @@ async def adaptive_forward_stride(total_cm: float, *, chunk_cm: float, require_p
     is never one blind motor command.
     """
     remaining = max(0.0, float(total_cm))
-    chunk_limit = max(1.0, min(10.0, float(chunk_cm)))
+    chunk_limit = max(1.0, min(16.0, float(chunk_cm)))
     chunks: list[dict[str, Any]] = []
     travelled = 0.0
     while remaining > 0.1:
