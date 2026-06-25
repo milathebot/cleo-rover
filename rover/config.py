@@ -97,6 +97,23 @@ class AudioConfig(BaseModel):
     speaker_amp: str = "max98357a-i2s"
 
 
+class OdometryConfig(BaseModel):
+    """Open-loop motion-model coefficients (no encoders/IMU; calibrated guesses).
+
+    Calibrate on hardware with a tape measure + UMBmark square; defaults reproduce
+    the existing move_step feel so behavior is unchanged until measured.
+    """
+
+    cm_s_per_duty: float = 33.0
+    duty_deadband: float = Field(default=0.08, ge=0.0, le=0.5)
+    deg_s_per_turn_duty: float = 200.0
+    turn_deadband: float = Field(default=0.10, ge=0.0, le=0.5)
+    dead_time_ms: float = Field(default=60.0, ge=0.0, le=400.0)
+    distance_sigma_frac: float = Field(default=0.30, ge=0.0, le=1.0)
+    heading_sigma_frac: float = Field(default=0.45, ge=0.0, le=1.0)
+    range_samples: int = Field(default=5, ge=1, le=15)
+
+
 class PersonalityConfig(BaseModel):
     baseline_mood: str = "calm"
     curiosity: float = Field(default=0.55, ge=0.0, le=1.0)
@@ -140,6 +157,7 @@ class RoverConfig(BaseModel):
     rgb: RGBConfig = Field(default_factory=RGBConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
+    odometry: OdometryConfig = Field(default_factory=OdometryConfig)
     life_loop: LifeLoopConfig = Field(default_factory=LifeLoopConfig)
 
     def public_summary(self) -> dict[str, Any]:

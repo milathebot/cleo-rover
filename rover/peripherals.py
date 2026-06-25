@@ -87,23 +87,37 @@ class FreenoveSensorReader:
             for device in devices.values():
                 device.close()
 
-    def read_front_distance_cm(self) -> float | None:
+    def read_front_distance_cm(self, samples: int = 1) -> float | None:
         # Keep one gpiozero DistanceSensor per service process. Creating/closing it
         # for every watchdog/sensors request can race with concurrent calls and leave
         # GPIO22/27 claimed, which disables the safety preflight exactly when we need it.
+        #
+        # samples>1 returns the MEDIAN of several quick reads to reject single-ping
+        # spikes/specular dropouts; used by deliberate scans where the noise causes
+        # false navigation turns. samples=1 keeps the fast path for the real-time
+        # reflex/watchdog, where a single close read SHOULD stop immediately
+        # (fail-closed) rather than wait for a median.
         global _DISTANCE_SENSOR
         _, DistanceSensor = _import_gpiozero()
+        count = max(1, int(samples))
         with _DISTANCE_SENSOR_LOCK:
             if _DISTANCE_SENSOR is None:
                 _DISTANCE_SENSOR = DistanceSensor(echo=22, trigger=27, max_distance=3.0)
                 time.sleep(0.08)
-            distance_cm = round(float(_DISTANCE_SENSOR.distance) * 100, 1)
-            # HC-SR04/gpiozero can occasionally emit impossible negative values during
-            # echo timeout/noise, especially while the turret has just moved. Treat as
-            # unknown so planners fail closed instead of inventing a huge obstacle.
-            if distance_cm < 0:
-                return None
-            return distance_cm
+            readings: list[float] = []
+            for index in range(count):
+                value = round(float(_DISTANCE_SENSOR.distance) * 100, 1)
+                # HC-SR04/gpiozero can emit impossible negatives on echo timeout/noise,
+                # especially right after the turret moves. Drop them rather than invent
+                # a huge obstacle; planners treat a missing reading as fail-closed.
+                if value >= 0:
+                    readings.append(value)
+                if count > 1 and index < count - 1:
+                    time.sleep(0.012)
+        if not readings:
+            return None
+        readings.sort()
+        return readings[len(readings) // 2]
 
     def read_adc(self) -> dict[int, float]:
         adc = ADS7830(voltage_coefficient=self.adc_voltage_coefficient)
@@ -141,7 +155,10 @@ class FreenoveSensorReader:
             out["adc_channels"] = {str(k): v for k, v in adc.items()}
             out["adc_ready"] = True
             # Freenove ADS7830 channel 2 is the board power sense in the vendor code.
-            battery_voltage = round(adc.get(2, 0.0) * 2, 2)
+            # Return None (not a fake 0.0V/0%) when the channel is missing, so a
+            # read glitch cannot masquerade as a critically low battery.
+            raw_power = adc.get(2)
+            battery_voltage = round(raw_power * 2, 2) if raw_power is not None else None
             out["battery_voltage"] = battery_voltage
             out["battery_percent"] = estimate_battery_percent(battery_voltage)
         except Exception as exc:  # pragma: no cover - hardware-dependent

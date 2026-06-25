@@ -107,6 +107,16 @@ class RoverBody:
             adc_voltage_coefficient=self.config.sensors.adc_voltage_coefficient,
         ).snapshot()
 
+    def front_distance_median(self, samples: int | None = None) -> float | None:
+        """Deliberate median range read for scans (noise-resistant). None in sim."""
+        if self.mode != "hardware":
+            return None
+        count = samples if samples is not None else int(getattr(self.config.odometry, "range_samples", 5))
+        return FreenoveSensorReader(
+            front_stop_distance_cm=self.config.safety.front_stop_distance_cm,
+            adc_voltage_coefficient=self.config.sensors.adc_voltage_coefficient,
+        ).read_front_distance_cm(samples=count)
+
     async def _check_forward_reflex(self, command: DriveCommand, *, source: str) -> bool:
         if not self.hardware or not self.motors_armed or command.linear <= 0:
             return False

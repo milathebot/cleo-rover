@@ -27,6 +27,7 @@ from .navigation import (
     DoorwayBands,
     decide_hallway_action,
 )
+from .odometry import estimate_chunk_distance_cm, motion_model_from
 from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, HallwayScoutCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
 from .pip_brain import build_pip_brain
@@ -39,6 +40,9 @@ from .ui import operator_panel_html
 
 ROVER_MODE = os.getenv("CLEO_ROVER_MODE", "sim")
 CONFIG = load_config()
+# Single source of truth for cm<->pulse conversions and honest (encoder-less)
+# distance estimates. Replaces the old scattered *95/*55/*20 magic constants.
+MOTION = motion_model_from(CONFIG.odometry)
 body = RoverBody(mode=ROVER_MODE, config=CONFIG)
 events = EventStore()
 store = RoverStore(CONFIG.life_loop.data_path)
@@ -575,7 +579,10 @@ async def map_scan(command: MapScanCommand) -> dict:
             await body.set_turret(TurretCommand(pan_deg=clamped))
             await asyncio.sleep(command.settle_ms / 1000)
             sensors_now = body.sensors()
-            distance_cm = normalize_distance_cm(sensors_now.get("front_distance_cm"))
+            # Deliberate per-angle median read (noise/specular-dropout resistant) so
+            # the scan-center clearance the navigator trusts is not a single bad ping.
+            median_cm = body.front_distance_median()
+            distance_cm = normalize_distance_cm(median_cm if median_cm is not None else sensors_now.get("front_distance_cm"))
             item = scan_item(command.zone, clamped, distance_cm, payload={"sensors": sensors_now})
             saved_item = store.upsert_spatial(item)
             event = store.add_event(
@@ -605,7 +612,8 @@ async def visual_map_scan(command: VisualMapScanCommand) -> dict:
             await body.set_turret(TurretCommand(pan_deg=clamped))
             await asyncio.sleep(command.settle_ms / 1000)
             sensors_now = body.sensors()
-            distance_cm = normalize_distance_cm(sensors_now.get("front_distance_cm"))
+            median_cm = body.front_distance_median()
+            distance_cm = normalize_distance_cm(median_cm if median_cm is not None else sensors_now.get("front_distance_cm"))
             capture = capture_camera_snapshot(CONFIG.camera.capture_dir, width=CONFIG.camera.width, height=CONFIG.camera.height) if body.mode == "hardware" and command.capture_each_angle else None
             item = scan_item(command.zone, clamped, distance_cm, payload={"sensors": sensors_now, "capture": capture})
             saved_item = store.upsert_spatial(item)
@@ -639,13 +647,25 @@ async def presence_remember_room(zone: str = "room") -> dict:
 
 @app.post("/movement/move-step")
 async def move_step(command: MoveStepCommand) -> dict:
-    # Tuned from real Pip floor tests. The first calibration moved cleanly but
-    # under-travelled badly: requested 24cm produced only a few cm of motion.
-    # Keep the duty below the floor-cautious grant, but give each cm more time.
+    # A single move-step is one short, safety-capped pulse. Larger travel must be
+    # built from several chunks (adaptive_forward_stride), because the pulse is
+    # capped by max_drive_duration_ms. We keep the proven duty/timing, but now
+    # report an HONEST estimated distance for the *actually applied* pulse so
+    # callers stop believing a capped pulse moved the full requested distance.
     linear = 0.38 if command.forward_cm >= 0 else -0.32
     duration = int(min(850, max(260, abs(command.forward_cm) * 95)))
     result = await guarded_drive(DriveCommand(linear=linear, turn=0, duration_ms=duration), require_permission=command.require_permission)
     result["step"] = command.model_dump()
+    result["requested_cm"] = command.forward_cm
+    if result.get("ok"):
+        applied = result.get("command") or {}
+        applied_duration = float(applied.get("duration_ms", min(duration, CONFIG.safety.max_drive_duration_ms)))
+        applied_linear = float(applied.get("linear", linear))
+        signed = MOTION.distance_cm_for(applied_linear, applied_duration)
+        result["estimated_cm"] = round(signed if command.forward_cm >= 0 else -signed, 1)
+    else:
+        result["estimated_cm"] = 0.0
+    result["distance_note"] = "open-loop estimate (no encoders); a single pulse is capped by max_drive_duration_ms"
     return result
 
 
@@ -682,33 +702,67 @@ async def adaptive_forward_stride(total_cm: float, *, chunk_cm: float, require_p
     remaining = max(0.0, float(total_cm))
     chunk_limit = max(1.0, min(16.0, float(chunk_cm)))
     chunks: list[dict[str, Any]] = []
-    travelled = 0.0
+    est_travelled = 0.0
+    stall_streak = 0
+
+    def stride_result(ok: bool, reason: str | None = None, **extra) -> dict:
+        out = {
+            "ok": ok,
+            "kind": "adaptive-stride",
+            "planned_cm": round(total_cm, 1),
+            "est_travelled_cm": round(est_travelled, 1),
+            # Back-compat alias; both are open-loop estimates, never measured truth.
+            "travelled_cm": round(est_travelled, 1),
+            "chunk_cm": chunk_limit,
+            "chunks": chunks,
+            "distance_note": "open-loop estimate (no encoders); ultrasonic-delta blended with motion model",
+        }
+        if reason is not None:
+            out["reason"] = reason
+        out.update(extra)
+        return out
+
     while remaining > 0.1:
         sensors_now = body.sensors()
         front = normalize_distance_cm(sensors_now.get("front_distance_cm"))
-        front_value = float(front) if front is not None else None
-        if front_value is None:
+        front_before = float(front) if front is not None else None
+        if front_before is None:
             await body.stop()
-            return {"ok": False, "kind": "adaptive-stride", "reason": "front range invalid before chunk", "front_distance_cm": front_value, "planned_cm": total_cm, "travelled_cm": round(travelled, 1), "chunks": chunks}
-        if front_value < brake_cm:
+            return stride_result(False, "front range invalid before chunk", front_distance_cm=front_before)
+        if front_before < brake_cm:
             await body.stop()
-            return {"ok": False, "kind": "adaptive-stride", "reason": "front blocked before chunk", "front_distance_cm": front_value, "planned_cm": total_cm, "travelled_cm": round(travelled, 1), "chunks": chunks}
+            return stride_result(False, "front blocked before chunk", front_distance_cm=front_before)
         extend_active_movement_grant(12)
         this_chunk = min(chunk_limit, remaining)
         move = await move_step(MoveStepCommand(forward_cm=this_chunk, require_permission=require_permission))
-        chunks.append({"requested_cm": round(this_chunk, 1), "front_before_cm": front_value, "result": move})
-        # Let the asynchronous drive monitor finish the requested pulse. Previously
-        # adaptive stride stopped after 150ms, cutting 570-850ms calibrated chunks
-        # into tiny nudges even though direct move-step calibration was correct.
         command_payload = move.get("command") if isinstance(move, dict) else None
         duration_ms = float(command_payload.get("duration_ms", 0)) if isinstance(command_payload, dict) else 0.0
+        applied_linear = float(command_payload.get("linear", 0.0)) if isinstance(command_payload, dict) else 0.0
+        # Let the asynchronous drive monitor finish the pulse, then stop and measure.
         await asyncio.sleep(max(0.15, duration_ms / 1000.0 + 0.05))
         await body.stop()
         if not move.get("ok"):
-            return {"ok": False, "kind": "adaptive-stride", "reason": "chunk move failed", "planned_cm": total_cm, "travelled_cm": round(travelled, 1), "chunks": chunks}
-        travelled += this_chunk
+            return stride_result(False, "chunk move failed")
+        front_after = normalize_distance_cm(body.sensors().get("front_distance_cm"))
+        est = estimate_chunk_distance_cm(
+            model=MOTION,
+            duty=applied_linear,
+            duration_ms=duration_ms,
+            front_before_cm=front_before,
+            front_after_cm=front_after,
+        )
+        chunks.append({"requested_cm": round(this_chunk, 1), "front_before_cm": front_before, "front_after_cm": front_after, "estimate": est})
+        est_travelled += est["estimated_cm"]
         remaining -= this_chunk
-    return {"ok": True, "kind": "adaptive-stride", "planned_cm": round(total_cm, 1), "travelled_cm": round(travelled, 1), "chunk_cm": chunk_limit, "chunks": chunks}
+        # Stall = commanded forward but a near surface ahead did not get closer.
+        if est["stalled"]:
+            stall_streak += 1
+            if stall_streak >= 2:
+                await body.stop()
+                return stride_result(False, "stalled: commanded forward but no range progress", stalled=True)
+        else:
+            stall_streak = 0
+    return stride_result(True)
 
 
 @app.post("/movement/rotate-step")
