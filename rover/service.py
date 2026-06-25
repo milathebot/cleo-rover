@@ -29,6 +29,7 @@ from .navigation import (
 )
 from .odometry import estimate_chunk_distance_cm, motion_model_from
 from . import vision_service
+from . import voice_daemon
 from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, HallwayScoutCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
 from .pip_brain import build_pip_brain
@@ -443,6 +444,34 @@ def simulate_hearing(event: RoverEvent | None = None) -> dict:
     events.add(saved)
     autonomy.update_from_event(saved)
     return {"ok": True, "event": saved.model_dump(), "state": autonomy.state.model_dump()}
+
+
+@app.post("/hearing/listen")
+async def hearing_listen(text: str | None = None, seconds: float = 4.0) -> dict:
+    """Hear a spoken command. With ?text= (external STT / testing) it routes that
+    transcript; otherwise it captures from the USB mic and transcribes offline on
+    hardware, then routes through the same /pip/command intent router. Talking
+    never enables movement (allow_movement stays False; motion stays gated)."""
+    transcript = text
+    listen_result = None
+    if transcript is None:
+        if body.mode != "hardware":
+            return {"ok": True, "available": False, "reason": "mic capture only on hardware; pass ?text= to route an external transcript", "backends": voice_daemon.voice_backends()}
+        listen_result = voice_daemon.capture_and_transcribe(
+            seconds=seconds,
+            mic_device=CONFIG.voice.mic_device,
+            rate=CONFIG.voice.sample_rate,
+            backend=CONFIG.voice.stt_backend,
+            model_path=CONFIG.voice.stt_model_path,
+        )
+        if not listen_result.get("ok"):
+            return {"ok": False, "available": listen_result.get("available", False), "result": listen_result, "backends": voice_daemon.voice_backends()}
+        transcript = listen_result.get("text")
+    if not transcript:
+        return {"ok": True, "available": True, "transcript": None, "note": "no speech recognized"}
+    remember_event(RoverEvent(kind=RoverEventKind.speech, source="voice", label="heard", payload={"text": transcript}))
+    routed = await pip_command(PipCommand(text=transcript, source="voice"))
+    return {"ok": True, "available": True, "transcript": transcript, "listen": listen_result, "routed": routed}
 
 
 @app.post("/vision/snapshot")

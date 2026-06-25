@@ -204,6 +204,34 @@ def audio_devices() -> dict[str, Any]:
     return {"playback": run(["aplay", "-l"]), "capture": run(["arecord", "-l"])}
 
 
+def capture_mic(seconds: float = 4.0, *, device: str | None = None, rate: int = 16000) -> dict[str, Any]:
+    """Record a short mono WAV from the USB mic via ALSA `arecord` (16kHz default).
+
+    Returns {ok, path, ...}. The USB mic is validated as working on ALSA; this is
+    the real capture the voice pipeline transcribes. No-op-safe if arecord absent.
+    """
+    if not shutil.which("arecord"):
+        return {"ok": False, "error": "arecord not found", "available": False}
+    seconds = max(1.0, min(15.0, float(seconds)))
+    path = Path(os.getenv("CLEO_ROVER_TTS_CACHE_DIR", "/tmp")) / f"cleo-rover-listen-{int(time.time() * 1000)}.wav"
+    cmd = ["arecord", "-q", "-f", "S16_LE", "-r", str(int(rate)), "-c", "1", "-d", str(int(round(seconds)))]
+    card = device or os.getenv("ALSA_CARD")
+    if card:
+        cmd += ["-D", f"plughw:{card},0"]
+    cmd.append(str(path))
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=seconds + 8, check=False)
+    ok = result.returncode == 0 and path.exists() and path.stat().st_size > 44  # > WAV header
+    return {
+        "ok": ok,
+        "available": True,
+        "path": str(path) if ok else None,
+        "seconds": seconds,
+        "rate": rate,
+        "returncode": result.returncode,
+        "stderr_tail": result.stderr[-400:],
+    }
+
+
 def play_tone(seconds: float = 0.35, hz: int = 880) -> dict[str, Any]:
     if not shutil.which("aplay"):
         return {"ok": False, "error": "aplay not found"}

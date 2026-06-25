@@ -1,7 +1,10 @@
-# Example unit for the senses daemon (mic/voice + camera event streaming).
-# Adjust User=/paths to match your install; the body service must be running.
+# Example unit for the offline voice daemon (wake word -> STT -> /pip/command).
+# Requires the `voice` extra installed plus an offline STT backend (whisper.cpp or
+# vosk); see rover/voice_daemon.py. Adjust User=/paths to match your install; the
+# body service must be running. (For the old low-rate event simulator instead, use
+# ExecStart=.../cleo-rover-senses --simulate --interval 10.)
 [Unit]
-Description=Cleo Rover senses daemon
+Description=Cleo Rover voice daemon
 After=cleo-rover-body.service
 Requires=cleo-rover-body.service
 
@@ -9,9 +12,9 @@ Requires=cleo-rover-body.service
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/cleo-rover
-ExecStart=/home/pi/cleo-rover/.venv/bin/cleo-rover-senses --interval 2
+ExecStart=/home/pi/cleo-rover/.venv/bin/cleo-rover-voice --base http://127.0.0.1:8099
 Restart=always
-RestartSec=3
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

@@ -120,6 +120,19 @@ class VisionConfig(BaseModel):
     hazard_max_age_s: float = Field(default=120.0, ge=5.0, le=3600.0)
 
 
+class VoiceConfig(BaseModel):
+    """Offline-first voice input. Wake word + STT run on the Pi; talking never
+    enables movement (movement stays gated by grants + armed motors)."""
+
+    enabled: bool = True
+    wakeword: str = "hey pip"
+    stt_backend: str = "auto"  # auto | whisper_cpp | vosk
+    stt_model_path: str | None = None
+    mic_device: str | None = None  # ALSA card; falls back to $ALSA_CARD
+    utterance_seconds: float = Field(default=4.0, ge=1.0, le=15.0)
+    sample_rate: int = Field(default=16000, ge=8000, le=48000)
+
+
 class MindConfig(BaseModel):
     """The deliberative LLM mind. Enhancement over local autonomy; the API
     endpoint/key/model come from env (HERMES_*/MIND_*), never committed."""
@@ -192,6 +205,7 @@ class RoverConfig(BaseModel):
     odometry: OdometryConfig = Field(default_factory=OdometryConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
     mind: MindConfig = Field(default_factory=MindConfig)
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
     life_loop: LifeLoopConfig = Field(default_factory=LifeLoopConfig)
 
     def public_summary(self) -> dict[str, Any]:

@@ -270,6 +270,9 @@ def main(argv: list[str] | None = None) -> int:
     event.add_argument("--value", type=float, default=None)
 
     sub.add_parser("hear")
+    listen = sub.add_parser("listen")
+    listen.add_argument("--text", default=None, help="Route this transcript instead of capturing (external STT / testing)")
+    listen.add_argument("--seconds", type=float, default=4.0)
     sub.add_parser("snapshot")
     sub.add_parser("audio-devices")
     audio_tone = sub.add_parser("audio-tone")
@@ -512,6 +515,11 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "POST", "/events", {"kind": args.kind, "source": args.source, "label": args.label, "value": args.value})
     elif args.cmd == "hear":
         result = request(args.base, "POST", "/hearing/simulate")
+    elif args.cmd == "listen":
+        path = f"/hearing/listen?seconds={args.seconds}"
+        if args.text:
+            path += f"&text={urllib.parse.quote(args.text)}"
+        result = request(args.base, "POST", path, timeout=max(20.0, args.seconds + 70.0))
     elif args.cmd == "snapshot":
         result = request(args.base, "POST", "/vision/snapshot")
     elif args.cmd == "audio-devices":
