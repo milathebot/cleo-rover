@@ -1571,6 +1571,17 @@ async def hallway_scout_task(command: HallwayScoutCommand) -> dict:
             latest = (vision.get("placeholder_analysis") or {}) if isinstance(vision, dict) else {}
             actions.append({"kind": "vision", "cycle": cycle, "front_distance_cm": front_value, "capture": vision.get("capture"), "latest_placeholder": latest})
 
+        scan_summary: dict[str, Any] | None = None
+        if command.scan_before_move:
+            _scan, scan_summary = await reactive_escape_scan(command.zone, command.scan_angles)
+            actions.append({"kind": "range-scan", "cycle": cycle, "front_distance_cm": front_value, "summary": scan_summary})
+
+        center = (scan_summary or {}).get("center") if scan_summary else None
+        best = (scan_summary or {}).get("best") if scan_summary else None
+        center_distance = float(center.get("distance_cm")) if center and center.get("distance_cm") is not None else front_value
+        best_distance = float(best.get("distance_cm")) if best and best.get("distance_cm") is not None else None
+        best_bearing = float(best.get("bearing_deg")) if best and best.get("bearing_deg") is not None else None
+
         if front_value is None:
             blocked_streak += 1
             action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason="front range unknown")
@@ -1578,9 +1589,12 @@ async def hallway_scout_task(command: HallwayScoutCommand) -> dict:
             blocked_streak += 1
             await body.stop()
             action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"front blocked {front_value:.1f}cm")
-        elif front_value < command.clear_cm:
+        elif center_distance is not None and center_distance < command.clear_cm:
             blocked_streak += 1
-            action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"front cautious {front_value:.1f}cm")
+            action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"center not clear {center_distance:.1f}cm")
+        elif best_bearing is not None and best_distance is not None and abs(best_bearing) >= 18.0 and best_distance > (center_distance or 0.0) + 25.0:
+            blocked_streak += 1
+            action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"better opening at {best_bearing:.0f}deg")
         else:
             blocked_streak = 0
             move = await move_step(MoveStepCommand(forward_cm=command.step_cm, require_permission=True))
@@ -1588,6 +1602,8 @@ async def hallway_scout_task(command: HallwayScoutCommand) -> dict:
 
         action["cycle"] = cycle
         action["front_distance_cm"] = front_value
+        if scan_summary:
+            action["summary"] = scan_summary
         actions.append(action)
         await asyncio.sleep(command.pause_seconds)
         await body.stop()
@@ -1613,7 +1629,7 @@ async def hallway_scout_task(command: HallwayScoutCommand) -> dict:
         "complete_event": done.model_dump(),
         "summary": summary,
         "final_front_distance_cm": final_sensors.get("front_distance_cm"),
-        "safety": "Short proven pulses, stop after every action, ultrasonic checks each cycle, scan+turn when blocked, camera/Hermes context at configured intervals.",
+        "safety": "Short proven pulses, stop after every action, ultrasonic checks and range-scan before movement, scan+turn when center is not clear, camera/Hermes context at configured intervals.",
         "actions": compact_plan(actions) if command.compact else actions,
     }
 

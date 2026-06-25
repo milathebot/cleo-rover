@@ -189,9 +189,10 @@ def main(argv: list[str] | None = None) -> int:
     hallway_scout.add_argument("--allow-movement", action="store_true")
     hallway_scout.add_argument("--cycles", type=int, default=8)
     hallway_scout.add_argument("--vision-every", type=int, default=3)
+    hallway_scout.add_argument("--no-scan-before-move", action="store_true", help="Skip range scan before each forward step; not recommended near doorways")
     hallway_scout.add_argument("--step-cm", type=float, default=4.0)
-    hallway_scout.add_argument("--clear-cm", type=float, default=55.0)
-    hallway_scout.add_argument("--blocked-cm", type=float, default=45.0)
+    hallway_scout.add_argument("--clear-cm", type=float, default=75.0)
+    hallway_scout.add_argument("--blocked-cm", type=float, default=55.0)
     hallway_scout.add_argument("--pause-seconds", type=float, default=1.0)
     hallway_scout.add_argument("--speak", action="store_true")
     hallway_scout.add_argument("--verbose", action="store_true")
@@ -419,6 +420,7 @@ def main(argv: list[str] | None = None) -> int:
                 "allow_movement": args.allow_movement,
                 "cycles": args.cycles,
                 "vision_every": args.vision_every,
+                "scan_before_move": not args.no_scan_before_move,
                 "step_cm": args.step_cm,
                 "clear_cm": args.clear_cm,
                 "blocked_cm": args.blocked_cm,
