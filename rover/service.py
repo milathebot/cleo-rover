@@ -93,14 +93,41 @@ def save_pip_runtime() -> None:
 app = FastAPI(title="Cleo Rover Mk1 Body Service", version="0.1.0")
 
 
+_heartbeat_task: asyncio.Task | None = None
+
+
+def _start_life_heartbeat() -> None:
+    """Start the internal life heartbeat (hardware only) so Pip's emotional state
+    evolves on its own. Stays off in sim/tests to avoid background event noise."""
+    global _heartbeat_task
+    interval = CONFIG.life_loop.heartbeat_seconds
+    if body.mode != "hardware" or not CONFIG.life_loop.enabled or interval <= 0:
+        return
+    if _heartbeat_task and not _heartbeat_task.done():
+        return
+
+    async def loop() -> None:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                life_heartbeat_step()
+            except Exception:
+                pass
+
+    _heartbeat_task = asyncio.create_task(loop())
+
+
 @app.on_event("startup")
 async def start_body_watchdog() -> None:
     body.start_safety_watchdog()
+    _start_life_heartbeat()
 
 
 @app.on_event("shutdown")
 async def stop_body_watchdog() -> None:
     await body.stop_safety_watchdog()
+    if _heartbeat_task and not _heartbeat_task.done():
+        _heartbeat_task.cancel()
 
 
 def gpio_pin_claims() -> dict[int, list[str]]:
@@ -196,6 +223,35 @@ def remember_event(event: RoverEvent) -> RoverEvent:
     autonomy.update_from_event(saved)
     store.save_state(autonomy.state)
     return saved
+
+
+def pip_feelings() -> dict:
+    """Single unified view of Pip's emotional state (the AutonomyEngine is the
+    source of truth; boredom is the legacy life-loop scalar kept for continuity)."""
+    a = autonomy.state
+    return {
+        "mood": a.mood,
+        "energy": round(a.energy, 3),
+        "curiosity": round(a.curiosity, 3),
+        "attention": round(a.attention, 3),
+        "confidence": round(a.confidence, 3),
+        "boredom": round(float(pip_state.get("boredom", 0.0) or 0.0), 3),
+    }
+
+
+def life_heartbeat_step() -> dict:
+    """One internal life tick: refresh energy from battery, decay attention/
+    curiosity via an idle tick, and keep Pip's displayed mood in sync with its
+    feelings. Lets the emotional state evolve without any external poke (D19)."""
+    sensors_now = body.sensors()
+    percent = sensors_now.get("battery_percent")
+    if percent is not None:
+        remember_event(RoverEvent(kind=RoverEventKind.battery, source="heartbeat", value=float(percent), payload={"percent": percent}))
+    idle = remember_event(RoverEvent(kind=RoverEventKind.idle_tick, source="heartbeat", timestamp=time.time()))
+    if pip_state.get("mode") != "sleep" and pip_state.get("mood") != "low_power":
+        pip_state["mood"] = autonomy.state.mood
+    save_pip_runtime()
+    return {"ok": True, "feelings": pip_feelings(), "idle_event_at": idle.timestamp}
 
 
 def drive_safety(command: DriveCommand, *, require_permission: bool = False) -> tuple[bool, str, DriveCommand]:
@@ -569,6 +625,13 @@ def autonomy_state() -> dict:
         "hub": body_status_dict().get("hub"),
         "recent_events": [event.model_dump() for event in store.recent_events(10)],
     }
+
+
+@app.post("/autonomy/heartbeat")
+def autonomy_heartbeat() -> dict:
+    """Run one internal life tick (refresh energy from battery, decay, sync mood).
+    The background heartbeat calls this on hardware; exposed for manual/test use."""
+    return life_heartbeat_step()
 
 
 @app.get("/autonomy/dashboard", response_class=HTMLResponse)
@@ -1036,6 +1099,7 @@ def pip_public_state() -> dict:
         "identity": pip_identity,
         "soul_version": PIP_SOUL_VERSION,
         "state": pip_state,
+        "feelings": pip_feelings(),
         "battery": battery,
         "movement": movement_status(),
         "sensors": {
@@ -1114,9 +1178,11 @@ def pip_should_patrol(*, force: bool = False) -> tuple[bool, str]:
     last = pip_state.get("last_patrol_at")
     if last and now - float(last) < 600:
         return False, "patrol cooldown active"
-    if float(pip_state.get("boredom", 0)) < 0.6:
-        return False, "not bored enough"
-    return True, "bored and curious"
+    # Patrol when bored OR when the unified emotion engine is genuinely curious,
+    # so curiosity (not just a legacy boredom scalar) actually drives exploration.
+    if float(pip_state.get("boredom", 0)) < 0.6 and autonomy.state.curiosity < 0.68:
+        return False, "not bored or curious enough"
+    return True, "bored or curious"
 
 
 @app.get("/pip/state")
@@ -1195,6 +1261,9 @@ async def pip_life_tick(command: PipLifeTickCommand) -> dict:
     pip_state["last_life_tick_at"] = time.time()
     sensors_now = body.sensors()
     battery = battery_safety_summary(sensors_now)
+    # Feed real battery into the unified emotion engine so energy tracks reality.
+    if sensors_now.get("battery_percent") is not None:
+        remember_event(RoverEvent(kind=RoverEventKind.battery, source="life_tick", value=float(sensors_now["battery_percent"]), payload={"percent": sensors_now["battery_percent"]}))
     actions: list[dict] = []
 
     if pip_state["mode"] == "sleep" and not command.force:
@@ -1232,11 +1301,12 @@ async def pip_life_tick(command: PipLifeTickCommand) -> dict:
                 zone=str(pip_state.get("current_zone") or "office"),
                 allow_movement=movement_allowed,
                 duration_seconds=45,
-                explore_cycles=6,
+                # Curiosity drives how far Pip ranges; confidence is reflected via mood.
+                explore_cycles=4 + round(autonomy.state.curiosity * 4),
                 observe_every_cycles=3,
                 capture_vision=True,
                 compact=True,
-                mood="curious",
+                mood=autonomy.state.mood,
                 notes=f"pip life tick patrol: {command.reason}; {movement_reason}",
             )
         )

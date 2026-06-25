@@ -186,6 +186,10 @@ class LifeLoopConfig(BaseModel):
     enabled: bool = True
     data_path: str = "data/rover.sqlite"
     cleo_hub_url: str = "http://127.0.0.1:8787"
+    # Internal heartbeat: how often Pip refreshes energy from battery, injects an
+    # idle tick (mood/attention/curiosity decay), and evolves on its own without
+    # an external poker. 0 disables. Only auto-starts on hardware.
+    heartbeat_seconds: int = Field(default=20, ge=0, le=600)
     personality: PersonalityConfig = Field(default_factory=PersonalityConfig)
     quiet_hours: QuietHoursConfig = Field(default_factory=QuietHoursConfig)
     behavior_cooldowns: BehaviorCooldownConfig = Field(default_factory=BehaviorCooldownConfig)

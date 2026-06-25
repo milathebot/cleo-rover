@@ -213,6 +213,8 @@ def build_pip_brain(
             "autonomy_mood": autonomy.mood,
             "curiosity": autonomy.curiosity,
             "attention": autonomy.attention,
+            "energy": autonomy.energy,
+            "confidence": autonomy.confidence,
         },
         "where_am_i": room,
         "what_happened": _motion_story(recent_events, status, movement, sensors),
