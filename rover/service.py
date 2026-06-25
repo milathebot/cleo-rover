@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import time
+import traceback
 from typing import Any
 
 from fastapi import FastAPI, Response
@@ -1528,6 +1529,21 @@ async def first_adventure_task(command: FirstAdventureCommand) -> dict:
 
 @app.post("/tasks/hallway-scout")
 async def hallway_scout_task(command: HallwayScoutCommand) -> dict:
+    try:
+        return await _hallway_scout_task(command)
+    except Exception as exc:  # Fail closed: stop motors and return the real error to the CLI.
+        await body.stop()
+        return {
+            "ok": False,
+            "started_movement": False,
+            "reason": "hallway scout internal error",
+            "error": repr(exc),
+            "traceback_tail": traceback.format_exc().splitlines()[-8:],
+            "stopped": True,
+        }
+
+
+async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
     """Fast supervised doorway/hallway scout.
 
     This is intentionally Pi-local and sensor-first: short proven movement pulses,
@@ -1567,9 +1583,13 @@ async def hallway_scout_task(command: HallwayScoutCommand) -> dict:
         front = sensors_now.get("front_distance_cm")
         front_value = float(front) if front is not None else None
         if command.vision_every and (cycle == 1 or cycle % command.vision_every == 0):
-            vision = await vision_awareness_task(VisionAwarenessCommand(zone=command.zone, capture=True, scan=False, compact=True, notes=f"hallway scout cycle {cycle}"))
-            latest = (vision.get("placeholder_analysis") or {}) if isinstance(vision, dict) else {}
-            actions.append({"kind": "vision", "cycle": cycle, "front_distance_cm": front_value, "capture": vision.get("capture"), "latest_placeholder": latest})
+            try:
+                vision = await vision_awareness_task(VisionAwarenessCommand(zone=command.zone, capture=True, scan=False, compact=True, notes=f"hallway scout cycle {cycle}"))
+                latest = (vision.get("placeholder_analysis") or {}) if isinstance(vision, dict) else {}
+                actions.append({"kind": "vision", "cycle": cycle, "front_distance_cm": front_value, "capture": vision.get("capture"), "latest_placeholder": latest})
+            except Exception as exc:
+                actions.append({"kind": "vision-error", "cycle": cycle, "front_distance_cm": front_value, "error": repr(exc)})
+                # Vision is helpful but not allowed to crash the Pi-local safety loop.
 
         scan_summary: dict[str, Any] | None = None
         if command.scan_before_move:
