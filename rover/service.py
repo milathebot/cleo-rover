@@ -40,6 +40,7 @@ from . import perception as perception_mod
 from . import cruise as cruise_mod
 from . import battery as battery_mod
 from . import rgb_affect as rgb_affect_mod
+from . import degrade as degrade_mod
 from .occupancy import OccupancyGrid, grid_config_from
 from .topo_map import TopoMap
 from . import topo_executor as topo_exec
@@ -138,6 +139,20 @@ CRUISE_SNAPSHOT = perception_mod.PolarSnapshot()
 BATTERY = battery_mod.BatteryEstimator()
 _last_battery: Any = None
 _rgb_task_handle: Any = None
+# Unified, lightweight task history (a finished-product "what has Pip been doing?"
+# surface without rewriting every task's response schema).
+_task_history: list[dict] = list(store.load_json("task_history") or [])
+
+
+def record_task_result(name: str, started: float, *, did_move: bool = False, ok: bool = True, extra: dict | None = None) -> dict:
+    entry = {"task": name, "at": round(started, 2), "duration_s": round(time.time() - started, 2), "did_move": bool(did_move), "ok": bool(ok)}
+    if extra:
+        entry.update(extra)
+    _task_history.append(entry)
+    if len(_task_history) > 50:
+        del _task_history[:-50]
+    store.save_json("task_history", _task_history[-50:])
+    return entry
 
 
 def update_battery(sensors_now: dict) -> Any:
@@ -145,6 +160,24 @@ def update_battery(sensors_now: dict) -> Any:
     global _last_battery
     _last_battery = BATTERY.update(voltage=sensors_now.get("battery_voltage"), motors_active=not body.state.stopped)
     return _last_battery
+
+
+def current_degradation(sensors_now: dict | None = None, reading: Any = None):
+    """Assess Pip's current capability tier (full/scan-only/turret-only/stopped)."""
+    sensors_now = sensors_now if sensors_now is not None else body.sensors()
+    reading = reading if reading is not None else update_battery(sensors_now)
+    rs = body.state.last_reflex_stop
+    reflex_active = bool(rs and (time.time() - float(rs.get("time") or 0.0)) < 2.0)
+    temp = cpu_temp_c()
+    thermal_hot = temp is not None and temp >= float(CONFIG.safety.thermal_hard_c)
+    return degrade_mod.assess_degradation(
+        motors_armed=body.motors_armed,
+        bench_safe=CONFIG.safety.bench_safe_no_motors,
+        ultrasonic_ready=bool(sensors_now.get("ultrasonic_ready")),
+        battery_critical=bool(getattr(reading, "critical", False)),
+        reflex_active=reflex_active,
+        thermal_hot=thermal_hot,
+    )
 
 
 def compute_affect_frame(phase: float = 0.0):
@@ -496,6 +529,7 @@ def health_composite() -> dict:
     move_ok, move_reason = pip_can_autonomously_move(allow_movement=True, battery=battery)
     grant = active_movement_grant()
     goal = active_goal()
+    degradation = current_degradation(sensors_now, reading)
     # The arbiter's would-be choice (read-only) + the RGB affect.
     try:
         decision = arbiter.arbitrate(arbiter_context())
@@ -529,6 +563,7 @@ def health_composite() -> dict:
         "feelings": feelings,
         "movement": {"permitted": move_ok, "reason": move_reason, "grant": grant, "owner": (grant or {}).get("owner")},
         "goal": goal.model_dump() if goal else None,
+        "degradation": degradation.as_dict(),
         "arbiter": {"would_choose": decision.get("behavior"), "reason": decision.get("reason")},
         "nav": {
             "current_place": _last_topo_node,
@@ -545,6 +580,51 @@ def health_composite() -> dict:
             "camera_ready": (sensors_now.get("camera") or {}).get("ready"),
             "mind_configured": hermes_configured() or mind.mind_configured(),
         },
+    }
+
+
+@app.get("/health/degradation")
+def health_degradation() -> dict:
+    """What Pip can safely do right now (full / scan-only / turret-only / stopped)
+    and why -- one capability authority shared by health, the UI, and behaviors."""
+    return {"ok": True, **current_degradation().as_dict()}
+
+
+@app.get("/tasks/history")
+def tasks_history(limit: int = 25) -> dict:
+    """Recent task/behavior history (what Pip has been doing), newest first."""
+    return {"ok": True, "history": list(reversed(_task_history))[: max(1, min(limit, 50))]}
+
+
+@app.post("/pip/live")
+async def pip_live(on: bool = True) -> dict:
+    """Bring the whole being to life (or pause it): the heartbeat, the behavior
+    arbiter, and the RGB expression loop. On hardware these auto-start per their
+    flags; this is the single explicit on/off + a composite snapshot of the result.
+    In sim the loops are inert (no hardware), so this reports what WOULD run."""
+    if on:
+        _start_life_heartbeat()
+        _start_arbiter_loop()
+        _start_rgb_expression()
+    else:
+        if _cruise_stop_event is not None:
+            _cruise_stop_event.set()
+        for task in (_heartbeat_task, _arbiter_task, _rgb_task_handle):
+            if task is not None and not task.done():
+                task.cancel()
+        await body.stop()
+    alive = {
+        "heartbeat": bool(_heartbeat_task and not _heartbeat_task.done()),
+        "arbiter": bool(_arbiter_task and not _arbiter_task.done()),
+        "rgb": bool(_rgb_task_handle and not _rgb_task_handle.done()),
+    }
+    return {
+        "ok": True,
+        "live": on,
+        "loops": alive,
+        "note": "loops auto-start only on hardware with their flags; in sim, drive ticks via /pip/arbiter/tick and /pip/life-tick.",
+        "arbiter_enabled": CONFIG.life_loop.arbiter_enabled,
+        "mode": body.mode,
     }
 
 
@@ -3112,6 +3192,7 @@ def arbiter_context() -> dict:
 
 async def arbiter_tick(*, allow_movement: bool = False) -> dict:
     """One top-level decision: pick a behavior and run it via a safe primitive."""
+    started = time.time()
     ctx = arbiter_context()
     decision = arbiter.arbitrate(ctx)
     behavior = decision["behavior"]
@@ -3137,6 +3218,7 @@ async def arbiter_tick(*, allow_movement: bool = False) -> dict:
         observe = await vision_awareness_task(VisionAwarenessCommand(zone=str(pip_state.get("current_zone") or "office"), capture=False, scan=True, compact=True, notes="arbiter observe"))
         result = {"scan_summary": observe.get("scan_summary")}
     remember_event(RoverEvent(kind=RoverEventKind.idle_tick, source="arbiter", label=f"arbiter:{behavior}", payload={"decision": decision}))
+    record_task_result(f"arbiter:{behavior}", started, did_move=move_ok and behavior in {arbiter.BEHAVIOR_RETURN_TO_CHARGER, arbiter.BEHAVIOR_PURSUE_GOAL, arbiter.BEHAVIOR_PATROL}, extra={"reason": decision.get("reason")})
     return {"ok": True, "decision": decision, "context": ctx, "result": result}
 
 
