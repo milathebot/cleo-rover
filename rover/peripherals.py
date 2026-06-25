@@ -97,7 +97,13 @@ class FreenoveSensorReader:
             if _DISTANCE_SENSOR is None:
                 _DISTANCE_SENSOR = DistanceSensor(echo=22, trigger=27, max_distance=3.0)
                 time.sleep(0.08)
-            return round(float(_DISTANCE_SENSOR.distance) * 100, 1)
+            distance_cm = round(float(_DISTANCE_SENSOR.distance) * 100, 1)
+            # HC-SR04/gpiozero can occasionally emit impossible negative values during
+            # echo timeout/noise, especially while the turret has just moved. Treat as
+            # unknown so planners fail closed instead of inventing a huge obstacle.
+            if distance_cm < 0:
+                return None
+            return distance_cm
 
     def read_adc(self) -> dict[int, float]:
         adc = ADS7830(voltage_coefficient=self.adc_voltage_coefficient)

@@ -151,7 +151,7 @@ def extend_active_movement_grant(seconds: float) -> None:
 
 
 def sensor_safety_event(sensors_now: dict, *, source: str) -> RoverEvent | None:
-    distance = sensors_now.get("front_distance_cm")
+    distance = normalize_distance_cm(sensors_now.get("front_distance_cm"))
     if distance is None:
         return None
     try:
@@ -192,7 +192,7 @@ def drive_safety(command: DriveCommand, *, require_permission: bool = False) -> 
             "turn": max(-float(grant.get("max_turn", 0.7)), min(float(grant.get("max_turn", 0.7)), command.turn)),
         })
     sensors_now = body.sensors()
-    distance = sensors_now.get("front_distance_cm")
+    distance = normalize_distance_cm(sensors_now.get("front_distance_cm"))
     if command.linear > 0 and distance is not None and float(distance) < CONFIG.safety.front_stop_distance_cm:
         return False, f"drive rejected: obstacle at {distance}cm is closer than stop threshold {CONFIG.safety.front_stop_distance_cm}cm", command
     return True, "drive allowed", command
@@ -673,9 +673,12 @@ async def adaptive_forward_stride(total_cm: float, *, chunk_cm: float, require_p
     travelled = 0.0
     while remaining > 0.1:
         sensors_now = body.sensors()
-        front = sensors_now.get("front_distance_cm")
+        front = normalize_distance_cm(sensors_now.get("front_distance_cm"))
         front_value = float(front) if front is not None else None
-        if front_value is None or front_value < brake_cm:
+        if front_value is None:
+            await body.stop()
+            return {"ok": False, "kind": "adaptive-stride", "reason": "front range invalid before chunk", "front_distance_cm": front_value, "planned_cm": total_cm, "travelled_cm": round(travelled, 1), "chunks": chunks}
+        if front_value < brake_cm:
             await body.stop()
             return {"ok": False, "kind": "adaptive-stride", "reason": "front blocked before chunk", "front_distance_cm": front_value, "planned_cm": total_cm, "travelled_cm": round(travelled, 1), "chunks": chunks}
         extend_active_movement_grant(12)
@@ -1652,7 +1655,7 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
     blocked_streak = 0
     for cycle in range(1, command.cycles + 1):
         sensors_now = body.sensors()
-        front = sensors_now.get("front_distance_cm")
+        front = normalize_distance_cm(sensors_now.get("front_distance_cm"))
         front_value = float(front) if front is not None else None
         if command.vision_every and (cycle == 1 or cycle % command.vision_every == 0):
             try:
