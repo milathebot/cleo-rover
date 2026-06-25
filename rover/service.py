@@ -611,8 +611,9 @@ async def presence_remember_room(zone: str = "room") -> dict:
 
 @app.post("/movement/move-step")
 async def move_step(command: MoveStepCommand) -> dict:
-    linear = 0.28 if command.forward_cm >= 0 else -0.25
-    duration = int(min(500, max(180, abs(command.forward_cm) * 28)))
+    # Tuned from real Pip floor tests: 0.28/180ms buzzed; 4cm with max_linear 0.40 worked.
+    linear = 0.34 if command.forward_cm >= 0 else -0.30
+    duration = int(min(450, max(220, abs(command.forward_cm) * 55)))
     result = await guarded_drive(DriveCommand(linear=linear, turn=0, duration_ms=duration), require_permission=command.require_permission)
     result["step"] = command.model_dump()
     return result
@@ -620,10 +621,10 @@ async def move_step(command: MoveStepCommand) -> dict:
 
 @app.post("/movement/rotate-step")
 async def rotate_step(command: RotateStepCommand) -> dict:
-    # Manual rotate-step uses the same gentle calibration as supervised escape.
+    # Tuned from real Pip floor tests: direct turn=0.65 for 300ms worked cleanly.
     # Larger spins should be built from multiple rotate+scan cycles.
-    turn = 0.45 if command.deg >= 0 else -0.45
-    duration = int(min(320, max(120, abs(command.deg) * 12)))
+    turn = 0.65 if command.deg >= 0 else -0.65
+    duration = int(min(450, max(300, abs(command.deg) * 20)))
     result = await guarded_drive(DriveCommand(linear=0, turn=turn, duration_ms=duration), require_permission=command.require_permission)
     result["step"] = command.model_dump()
     return result
@@ -1381,9 +1382,9 @@ async def little_being_loop(command: LittleBeingLoopCommand) -> dict:
             allow_movement=movement_allowed,
             duration_seconds=remaining,
             max_cycles=command.explore_cycles,
-            crawl_linear=0.20,
-            crawl_duration_ms=120,
-            decision_pause_ms=80,
+            crawl_linear=0.34,
+            crawl_duration_ms=220,
+            decision_pause_ms=100,
             front_clear_cm=130.0,
             front_stop_cm=55.0,
             front_emergency_cm=30.0,
