@@ -32,7 +32,9 @@ from . import vision_service
 from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, HallwayScoutCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
 from .pip_brain import build_pip_brain
-from .pip_soul import PIP_SOUL_VERSION, pip_soul_public
+from .pip_soul import PIP_SOUL_VERSION, pip_soul_prompt, pip_soul_public
+from . import mind
+from .brain import choose_body_intent
 from .supervisor import intent_to_actions, supervisor_snapshot, validate_intent
 from .persistence import RoverStore
 from .renderer import render_expression
@@ -1369,6 +1371,65 @@ async def supervisor_intent(command: BodyIntentCommand) -> dict:
         applied.append({"kind": "speech", "result": speak_text(command.speech)})
     event = remember_event(RoverEvent(kind=RoverEventKind.manual_control, source=command.source, label=command.intent, payload={"intent": command.model_dump(), "applied": applied}))
     return {"ok": True, "accepted": True, "reason": reason, "applied": applied, "event": event.model_dump(), "snapshot": supervisor_status()}
+
+
+@app.get("/mind/status")
+def mind_status() -> dict:
+    return {
+        "ok": True,
+        "enabled": CONFIG.mind.enabled,
+        "configured": mind.mind_configured(),
+        "allowed_intents": list(mind.ALLOWED_INTENTS),
+        "note": "The LLM mind proposes intents; the Pi validates and may refuse. Deterministic policy is the default + fallback.",
+    }
+
+
+@app.post("/mind/step")
+async def mind_step(zone: str = "office") -> dict:
+    """One deliberative step: ask the pluggable LLM mind for a high-level intent,
+    validate it Pi-side, dispatch it if safe, else fall back to the deterministic
+    policy. The deterministic policy is also used directly when the mind is
+    disabled/offline, so Pip never depends on the cloud to keep acting safely.
+    """
+
+    def deterministic_command() -> BodyIntentCommand:
+        intent = choose_body_intent(supervisor_status(), zone=zone)
+        return BodyIntentCommand.model_validate(intent | {"source": "deterministic"})
+
+    # Local-only path: mind disabled or no endpoint configured.
+    if not CONFIG.mind.enabled or not mind.mind_configured():
+        command = deterministic_command()
+        result = await supervisor_intent(command)
+        return {"ok": True, "source": "deterministic", "mind_used": False, "intent": command.model_dump(), "result": result}
+
+    mind_result = mind.ask_mind_for_intent(
+        packet=pip_brain_snapshot(compact=True),
+        soul_prompt=pip_soul_prompt(),
+        max_tokens=CONFIG.mind.max_tokens,
+        timeout=CONFIG.mind.timeout_s,
+    )
+    if mind_result.get("ok"):
+        command = BodyIntentCommand.model_validate(mind_result["intent"] | {"source": "mind"})
+        result = await supervisor_intent(command)
+        if result.get("accepted"):
+            return {"ok": True, "source": "mind", "mind_used": True, "intent": command.model_dump(), "result": result}
+        # The mind's intent was refused by Pi-local safety -> deterministic fallback.
+        fallback = deterministic_command()
+        fb_result = await supervisor_intent(fallback)
+        return {
+            "ok": True,
+            "source": "deterministic_fallback",
+            "mind_used": True,
+            "mind_refused": result.get("reason"),
+            "mind_intent": command.model_dump(),
+            "intent": fallback.model_dump(),
+            "result": fb_result,
+        }
+
+    # Mind error / offline -> deterministic fallback (Pip keeps acting).
+    command = deterministic_command()
+    result = await supervisor_intent(command)
+    return {"ok": True, "source": "deterministic_fallback", "mind_used": False, "mind_error": mind_result.get("error"), "intent": command.model_dump(), "result": result}
 
 
 @app.post("/tasks/reactive-explore")

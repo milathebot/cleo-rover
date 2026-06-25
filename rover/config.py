@@ -120,6 +120,15 @@ class VisionConfig(BaseModel):
     hazard_max_age_s: float = Field(default=120.0, ge=5.0, le=3600.0)
 
 
+class MindConfig(BaseModel):
+    """The deliberative LLM mind. Enhancement over local autonomy; the API
+    endpoint/key/model come from env (HERMES_*/MIND_*), never committed."""
+
+    enabled: bool = True
+    max_tokens: int = Field(default=220, ge=16, le=1024)
+    timeout_s: float = Field(default=30.0, ge=1.0, le=120.0)
+
+
 class OdometryConfig(BaseModel):
     """Open-loop motion-model coefficients (no encoders/IMU; calibrated guesses).
 
@@ -182,6 +191,7 @@ class RoverConfig(BaseModel):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     odometry: OdometryConfig = Field(default_factory=OdometryConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
+    mind: MindConfig = Field(default_factory=MindConfig)
     life_loop: LifeLoopConfig = Field(default_factory=LifeLoopConfig)
 
     def public_summary(self) -> dict[str, Any]:
