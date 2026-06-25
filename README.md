@@ -15,6 +15,57 @@ Latest physical focus:
 - Current suspected issues to audit before patching are stale `last_reflex_stop` handling, raw front readings overriding fresh scan-center data, missing doorway state/hysteresis, and live vision not reaching `pip-brain` as actionable context.
 - Hermes/Cleo should provide high-level perception/planning only; the Pi must validate/refuse every movement intent locally.
 
+## Autonomous embodied-agent upgrade (2026-06-25)
+
+Pip evolved from a remote-controlled body into a dual-process embodied agent:
+instinctive and safe on its own, thoughtful when it matters, and never dependent
+on the cloud to stay safe. Full audit + design rationale (with research citations)
+is in [`docs/HANDOVER_2026-06-25_PIP_AUTONOMY_AUDIT.md`](docs/HANDOVER_2026-06-25_PIP_AUTONOMY_AUDIT.md).
+
+Architecture (three layers, Pi-local safety authoritative):
+
+- **Reflex** (Pi, hard real-time): ultrasonic stop + 30ms watchdog, plus new
+  optional **cliff (downward IR)** and **bumper** reflexes. Never vetoed.
+- **Instinct** (Pi, always-on, offline-capable): the doorway/hallway navigator
+  (`rover/navigation.py`), reactive explore, line-follow, memory-biased scanning.
+- **Mind** (pluggable LLM, optional): `rover/mind.py` asks an OpenAI-compatible
+  endpoint (Hermes by default, or Claude/any gateway) for ONE bounded intent; the
+  Pi validates and may refuse it, falling back to the deterministic policy.
+
+What changed:
+
+- **Doorway "cuts off / turns away" bug fixed** — event-based reflex freshness
+  (no more phantom recovery turns), scan-center as the clearance source of truth,
+  a configurable reflex floor (`safety.reflex_hard_cm`, was a hardcoded 45cm
+  dead-wall), and a real creep band + hysteresis. Pure, unit-tested logic.
+- **Honest distance** — one motion model (`rover/odometry.py`) for cm↔pulse;
+  move/stride report estimated (not pretended) travel and detect stalls; median
+  ultrasonic filtering for scans.
+- **Perception in the loop** — `rover/vision_service.py` emits real
+  `vision_analysis` events (fixes `latest_vision: null`); vision is advisory and
+  can add caution but never relax a reflex.
+- **Voice** — `rover/voice_daemon.py`: offline wake-word → STT → `/pip/command`
+  (`cleo-rover listen`, `/hearing/listen`). Talking never enables movement.
+- **Explore + map + recall** — decaying landmark memory, pre-move memory consult,
+  and `/tasks/return-to <landmark>` (e.g. the charger).
+- **Soul** — unified emotion engine with an internal heartbeat so mood/energy/
+  curiosity evolve on their own and actually drive behavior.
+
+New endpoints: `/mind/status`, `/mind/step`, `/hearing/listen`,
+`/autonomy/heartbeat`, `/tasks/line-follow`, `/tasks/return-to`. New CLI:
+`cleo-rover listen | line-follow | return-to`, `cleo-rover-brain --use-mind`,
+`cleo-rover-voice`. New config sections: `odometry`, `vision`, `mind`, `voice`,
+`safety.reflex_hard_cm`/`cliff_reflex_enabled`/`bumper_reflex_enabled`,
+`life_loop.heartbeat_seconds`. Optional extras: `pip install '.[vision]'` and
+`'.[voice]'` (ARM-guarded; no-ops on dev hosts).
+
+Everything is verifiable now in simulator + unit tests (`python -m pytest -q`,
+171 passing). Only physical *calibration* is left for supervised hardware runs:
+odometry coefficients (UMBmark), vision FPS/threshold, USB-mic levels/wake-word,
+and verifying IR/bumper polarity before enabling the cliff/bumper reflexes. None
+of those are on the safety-critical path — the reflexes and `validate_intent`
+are proven in sim first.
+
 ## What works on the current Pi 4B rover
 
 This repo runs in safe simulator and hardware-presence modes:
@@ -135,6 +186,12 @@ POST /vision/snapshot
 POST /vision/motion
 POST /presence/look-around
 POST /presence/remember-room
+GET  /mind/status
+POST /mind/step
+POST /autonomy/heartbeat
+POST /hearing/listen
+POST /tasks/line-follow
+POST /tasks/return-to
 ```
 
 ## Autonomy phases implemented
