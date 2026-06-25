@@ -71,9 +71,35 @@ class RoverBody:
             self.hardware = FreenoveHardware(self.config)
         self.hardware_ready = mode == "hardware" and self.hardware is not None
         self.motors_armed = self.hardware_ready and not self.config.safety.bench_safe_no_motors
+        # Freshness cursor for event-based reflex consumption (see consume_reflex_stop).
+        self._last_reflex_consumed_at: float = 0.0
 
     def _reflex_threshold_cm(self) -> float:
-        return max(45.0, float(self.config.safety.front_stop_distance_cm))
+        # Configurable hard emergency floor instead of the old hardcoded max(45,...)
+        # that made doorway approach impossible. front_stop still acts as a lower bound.
+        return max(
+            float(self.config.safety.reflex_hard_cm),
+            float(self.config.safety.front_stop_distance_cm),
+        )
+
+    def consume_reflex_stop(self) -> dict[str, Any] | None:
+        """Return the latest reflex stop only if it is *new* since the last consume.
+
+        `state.last_reflex_stop` is retained telemetry (read by /sensors and the
+        brain). Navigation loops must react to a fresh reflex *event* exactly once;
+        previously they tested the truthy retained dict every cycle, so one real
+        reflex was re-counted forever and forced spurious recovery turns. This
+        consumes by timestamp: it hands back the reflex once, then stays quiet
+        until a newer reflex fires, without erasing the telemetry.
+        """
+        reflex = self.state.last_reflex_stop
+        if not reflex:
+            return None
+        stamp = float(reflex.get("time") or 0.0)
+        if stamp <= self._last_reflex_consumed_at:
+            return None
+        self._last_reflex_consumed_at = stamp
+        return reflex
 
     def _sensor_snapshot(self) -> dict[str, Any]:
         return FreenoveSensorReader(

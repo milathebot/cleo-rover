@@ -64,6 +64,7 @@
     "default_drive_duration_ms": 250,
     "heartbeat_timeout_ms": 1500,
     "front_stop_distance_cm": 18,
+    "reflex_hard_cm": 30,
     "bench_safe_no_motors": true
   },
   "audio": {

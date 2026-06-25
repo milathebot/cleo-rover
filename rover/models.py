@@ -151,7 +151,20 @@ class HallwayScoutCommand(BaseModel):
     max_step_cm: float = Field(default=24.0, ge=2.0, le=90.0)
     stride_chunk_cm: float = Field(default=6.0, ge=1.0, le=16.0)
     clear_cm: float = Field(default=75.0, ge=35.0, le=220.0)
-    blocked_cm: float = Field(default=55.0, ge=30.0, le=140.0)
+    # blocked_cm is the top of the "too close to advance" band and the bottom of
+    # the creep band. Lowered from 55 to 42 so there is a real creep band
+    # (blocked_cm..clear_cm) for threading a doorway instead of a dead-zone.
+    blocked_cm: float = Field(default=42.0, ge=30.0, le=140.0)
+    # Below emergency_cm Pip stops + escapes immediately (independent of the
+    # driver's hard reflex floor). Ordered: emergency_cm < blocked_cm < clear_cm.
+    emergency_cm: float = Field(default=25.0, ge=10.0, le=60.0)
+    # An off-axis bearing must beat the centered clearance by this much before Pip
+    # turns to line up with it, so it does not abandon an open doorway ahead.
+    side_gain_cm: float = Field(default=25.0, ge=5.0, le=80.0)
+    # Hysteresis: consecutive fresh confirmations required before a recovery turn
+    # (blocked) or before declaring the doorway exited (clear).
+    confirm_blocked: int = Field(default=2, ge=1, le=6)
+    confirm_clear: int = Field(default=2, ge=1, le=6)
     # Avoid turret extremes that can clip Pip's shell; use ~85% of physical pan range.
     scan_angles: list[float] = Field(default_factory=lambda: [-60, -40, -20, 0, 20, 40, 60], max_length=9)
     pause_seconds: float = Field(default=1.0, ge=0.0, le=8.0)

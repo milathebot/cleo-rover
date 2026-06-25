@@ -84,6 +84,11 @@ class SafetyConfig(BaseModel):
     default_drive_duration_ms: int = 250
     heartbeat_timeout_ms: int = 1500
     front_stop_distance_cm: float = 18
+    # Hard emergency reflex floor (cm). The Pi-local forward reflex stops below
+    # max(reflex_hard_cm, front_stop_distance_cm). Previously this was hardcoded
+    # to max(45, ...), which made approaching a doorway (closing inside 45cm)
+    # structurally impossible. Configurable + scoped per profile now.
+    reflex_hard_cm: float = 30.0
     bench_safe_no_motors: bool = True
 
 

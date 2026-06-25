@@ -196,7 +196,8 @@ def main(argv: list[str] | None = None) -> int:
     hallway_scout.add_argument("--max-step-cm", type=float, default=24.0)
     hallway_scout.add_argument("--stride-chunk-cm", type=float, default=6.0, help="Max open-loop chunk inside an adaptive stride; sensors are checked between chunks")
     hallway_scout.add_argument("--clear-cm", type=float, default=75.0)
-    hallway_scout.add_argument("--blocked-cm", type=float, default=55.0)
+    hallway_scout.add_argument("--blocked-cm", type=float, default=42.0, help="Top of the 'too close to advance' band / bottom of the creep band")
+    hallway_scout.add_argument("--emergency-cm", type=float, default=25.0, help="Below this Pip stops and escapes immediately")
     hallway_scout.add_argument("--pause-seconds", type=float, default=1.0)
     hallway_scout.add_argument("--scan-angles", default="-60,-40,-20,0,20,40,60", help="Comma-separated turret pan angles; defaults avoid shell-clipping extremes")
     hallway_scout.add_argument("--speak", action="store_true")
@@ -437,6 +438,7 @@ def main(argv: list[str] | None = None) -> int:
                 "stride_chunk_cm": args.stride_chunk_cm,
                 "clear_cm": args.clear_cm,
                 "blocked_cm": args.blocked_cm,
+                "emergency_cm": args.emergency_cm,
                 "pause_seconds": args.pause_seconds,
                 "scan_angles": [float(x.strip()) for x in args.scan_angles.split(",") if x.strip()] if args.scan_angles else None,
                 "speak": args.speak,

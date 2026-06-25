@@ -13,11 +13,45 @@ Phase 1 adds unit tests for the pure per-cycle decision logic (`decide_hallway_a
 
 from __future__ import annotations
 
+import time
+
 from fastapi.testclient import TestClient
 
+from rover.config import RoverConfig
+from rover.drivers import RoverBody
 from rover.service import app
 
 client = TestClient(app)
+
+
+def test_consume_reflex_stop_returns_event_once_then_stays_quiet():
+    """Regression for D1: a stale reflex must not re-fire every cycle."""
+    body = RoverBody(mode="sim", config=RoverConfig())
+    assert body.consume_reflex_stop() is None  # nothing yet
+
+    now = time.time()
+    body.state.last_reflex_stop = {"reason": "front reflex", "time": now}
+    first = body.consume_reflex_stop()
+    assert first is not None and first["time"] == now
+    # Same retained reflex is no longer handed back (no phantom blocked streak).
+    assert body.consume_reflex_stop() is None
+    assert body.consume_reflex_stop() is None
+
+    # A genuinely newer reflex event is delivered once.
+    newer = now + 1.0
+    body.state.last_reflex_stop = {"reason": "front reflex", "time": newer}
+    again = body.consume_reflex_stop()
+    assert again is not None and again["time"] == newer
+    assert body.consume_reflex_stop() is None
+
+
+def test_reflex_threshold_is_configurable_and_no_longer_pinned_at_45():
+    # Default profile: reflex floor is the configured 30 (was hardcoded max(45,...)).
+    body = RoverBody(mode="sim", config=RoverConfig())
+    assert body._reflex_threshold_cm() == 30.0
+    # front_stop still acts as a lower bound if it is higher than reflex_hard_cm.
+    cfg = RoverConfig.model_validate({"safety": {"reflex_hard_cm": 20, "front_stop_distance_cm": 35}})
+    assert RoverBody(mode="sim", config=cfg)._reflex_threshold_cm() == 35.0
 
 
 def test_hallway_scout_observe_only_never_moves():

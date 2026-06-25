@@ -17,6 +17,16 @@ from .drivers import RoverBody
 from .hermes_bridge import ask_hermes_as_pip, hermes_configured
 from .hub import fetch_hub_snapshot
 from .mapping import map_summary, normalize_distance_cm, observation_items, scan_item, semantic_events_from_analysis
+from .navigation import (
+    ACTION_ADVANCE,
+    ACTION_ALIGN_TURN,
+    ACTION_CREEP,
+    ACTION_EMERGENCY_ESCAPE,
+    ACTION_HOLD,
+    ACTION_SCAN_TURN,
+    DoorwayBands,
+    decide_hallway_action,
+)
 from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, HallwayScoutCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
 from .pip_brain import build_pip_brain
@@ -663,7 +673,7 @@ def adaptive_forward_step_cm(
     return round(max(min_step_cm, min(max_step_cm, planned)), 1)
 
 
-async def adaptive_forward_stride(total_cm: float, *, chunk_cm: float, require_permission: bool = True, brake_cm: float = 45.0) -> dict:
+async def adaptive_forward_stride(total_cm: float, *, chunk_cm: float, require_permission: bool = True, brake_cm: float = 30.0) -> dict:
     """Move a planned stride as several short open-loop chunks with sensor checks.
 
     We still stop and re-read range between chunks, so a 24-50cm high-level stride
@@ -831,7 +841,7 @@ def battery_safety_summary(sensors: dict) -> dict:
 
 def compact_action(item: dict) -> dict:
     out = {"kind": item.get("kind")}
-    for key in ("cycle", "reason", "front_distance_cm"):
+    for key in ("cycle", "phase", "reason", "front_distance_cm", "raw_front_cm", "scan_center_cm", "decision_front_cm", "planned_step_cm", "blocked_streak"):
         if key in item:
             out[key] = item[key]
     if item.get("summary"):
@@ -1378,8 +1388,9 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
         crawl = await guarded_drive(DriveCommand(linear=command.crawl_linear, turn=0, duration_ms=command.crawl_duration_ms), require_permission=True)
         plan.append({"kind": "crawl", "result": crawl, "sense_after_ms": command.decision_pause_ms})
         await asyncio.sleep(command.decision_pause_ms / 1000)
-        if body.state.last_reflex_stop:
-            plan.append({"kind": "reflex-stop", "result": body.state.last_reflex_stop})
+        fresh_reflex = body.consume_reflex_stop()
+        if fresh_reflex:
+            plan.append({"kind": "reflex-stop", "result": fresh_reflex})
             blocked_streak += 1
 
     await body.stop()
@@ -1660,77 +1671,67 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
         actions.append({"kind": "speech", "result": speak_text("Scout mode. I will move farther when it is open, and slow down near the doorway.")})
 
     blocked_streak = 0
+    clear_streak = 0
+    bands = DoorwayBands(
+        emergency_cm=command.emergency_cm,
+        blocked_cm=command.blocked_cm,
+        clear_cm=command.clear_cm,
+        reflex_hard_cm=body._reflex_threshold_cm(),
+    )
     for cycle in range(1, command.cycles + 1):
         sensors_now = body.sensors()
         front = normalize_distance_cm(sensors_now.get("front_distance_cm"))
-        front_value = float(front) if front is not None else None
+        raw_front_cm = float(front) if front is not None else None
+        # Consume a *fresh* reflex event only. A stale retained reflex no longer
+        # re-counts every cycle (the old bug that forced phantom recovery turns).
+        fresh_reflex = body.consume_reflex_stop()
+        if fresh_reflex:
+            actions.append({"kind": "reflex-stop", "cycle": cycle, "result": fresh_reflex, "fresh": True})
+
         if command.vision_every and (cycle == 1 or cycle % command.vision_every == 0):
             try:
                 vision = await vision_awareness_task(VisionAwarenessCommand(zone=command.zone, capture=True, scan=False, compact=True, notes=f"hallway scout cycle {cycle}"))
                 latest = (vision.get("placeholder_analysis") or {}) if isinstance(vision, dict) else {}
-                actions.append({"kind": "vision", "cycle": cycle, "front_distance_cm": front_value, "capture": vision.get("capture"), "latest_placeholder": latest})
+                actions.append({"kind": "vision", "cycle": cycle, "raw_front_cm": raw_front_cm, "capture": vision.get("capture"), "latest_placeholder": latest})
             except Exception as exc:
-                actions.append({"kind": "vision-error", "cycle": cycle, "front_distance_cm": front_value, "error": repr(exc)})
-                # Vision is helpful but not allowed to crash the Pi-local safety loop.
+                actions.append({"kind": "vision-error", "cycle": cycle, "raw_front_cm": raw_front_cm, "error": repr(exc)})
+                # Vision is helpful but never allowed to crash the Pi-local safety loop.
 
         scan_summary: dict[str, Any] | None = None
         if command.scan_before_move:
             _scan, scan_summary = await reactive_escape_scan(command.zone, command.scan_angles)
-            actions.append({"kind": "range-scan", "cycle": cycle, "front_distance_cm": front_value, "summary": scan_summary})
+            actions.append({"kind": "range-scan", "cycle": cycle, "raw_front_cm": raw_front_cm, "summary": scan_summary})
 
         center = (scan_summary or {}).get("center") if scan_summary else None
         best = (scan_summary or {}).get("best") if scan_summary else None
-        center_distance = float(center.get("distance_cm")) if center and center.get("distance_cm") is not None else front_value
+        scan_center_cm = float(center.get("distance_cm")) if center and center.get("distance_cm") is not None else None
         best_distance = float(best.get("distance_cm")) if best and best.get("distance_cm") is not None else None
         best_bearing = float(best.get("bearing_deg")) if best and best.get("bearing_deg") is not None else None
 
-        if front_value is None:
-            blocked_streak += 1
-            if command.speak:
-                actions.append({"kind": "speech", "cycle": cycle, "result": speak_text("Range uncertain. I am scanning for a safe opening.")})
-            extend_active_movement_grant(20)
-            action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason="front range unknown")
-        elif front_value < command.blocked_cm:
-            blocked_streak += 1
-            await body.stop()
-            if command.speak:
-                actions.append({"kind": "speech", "cycle": cycle, "result": speak_text("Too close. I am stopping and looking for another way.")})
-            extend_active_movement_grant(20)
-            action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"front blocked {front_value:.1f}cm")
-        elif center_distance is not None and center_distance < command.clear_cm:
-            # Near doorway/open door panels should not create an endless scan-turn loop.
-            # If the center is above the hard blocked band and no off-axis bearing is
-            # much better, creep forward with a short adaptive stride. Turn only when
-            # the scan clearly shows a better opening to one side.
-            better_side_opening = best_bearing is not None and best_distance is not None and abs(best_bearing) >= 18.0 and best_distance > center_distance + 25.0
-            if center_distance > command.blocked_cm + 10.0 and not better_side_opening:
-                blocked_streak = 0
-                planned_step = command.min_step_cm if command.adaptive_step else min(command.step_cm, command.min_step_cm)
-                if command.speak:
-                    actions.append({"kind": "speech", "cycle": cycle, "result": speak_text(f"Doorway is close but open. Creeping forward about {planned_step:.0f} centimeters.")})
-                extend_active_movement_grant(20)
-                move = await adaptive_forward_stride(planned_step, chunk_cm=min(command.stride_chunk_cm, planned_step), require_permission=True, brake_cm=command.blocked_cm)
-                action = {"kind": "doorway-creep", "planned_step_cm": planned_step, "result": move}
-            else:
-                blocked_streak += 1
-                if command.speak:
-                    actions.append({"kind": "speech", "cycle": cycle, "result": speak_text("Doorway is close. I am scanning before I move.")})
-                extend_active_movement_grant(20)
-                action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"center not clear {center_distance:.1f}cm")
-        elif best_bearing is not None and best_distance is not None and abs(best_bearing) >= 18.0 and best_distance > (center_distance or 0.0) + 25.0:
-            blocked_streak += 1
-            if command.speak:
-                direction = "right" if best_bearing > 0 else "left"
-                actions.append({"kind": "speech", "cycle": cycle, "result": speak_text(f"I see more room to the {direction}. Turning to line up.")})
-            extend_active_movement_grant(20)
-            action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"better opening at {best_bearing:.0f}deg")
-        else:
-            blocked_streak = 0
+        decision = decide_hallway_action(
+            raw_front_cm=raw_front_cm,
+            scan_center_cm=scan_center_cm,
+            best_bearing_deg=best_bearing,
+            best_distance_cm=best_distance,
+            fresh_reflex=bool(fresh_reflex),
+            blocked_streak=blocked_streak,
+            clear_streak=clear_streak,
+            bands=bands,
+            side_gain_cm=command.side_gain_cm,
+            confirm_blocked=command.confirm_blocked,
+            confirm_clear=command.confirm_clear,
+            creep_step_cm=command.min_step_cm,
+        )
+        blocked_streak = decision.blocked_streak
+        clear_streak = decision.clear_streak
+        extend_active_movement_grant(20)
+
+        if decision.action == ACTION_ADVANCE:
             planned_step = command.step_cm
             if command.adaptive_step:
                 planned_step = adaptive_forward_step_cm(
-                    center_distance_cm=center_distance,
-                    front_distance_cm=front_value,
+                    center_distance_cm=scan_center_cm,
+                    front_distance_cm=raw_front_cm,
                     blocked_cm=command.blocked_cm,
                     min_step_cm=command.min_step_cm,
                     max_step_cm=command.max_step_cm,
@@ -1738,24 +1739,47 @@ async def _hallway_scout_task(command: HallwayScoutCommand) -> dict:
                 )
             if command.speak:
                 actions.append({"kind": "speech", "cycle": cycle, "result": speak_text(f"Path looks open. Moving about {planned_step:.0f} centimeters.")})
-            extend_active_movement_grant(20)
-            move = await adaptive_forward_stride(planned_step, chunk_cm=command.stride_chunk_cm, require_permission=True, brake_cm=command.blocked_cm)
-            action = {"kind": "adaptive-move" if command.adaptive_step else "move-step", "planned_step_cm": planned_step, "result": move}
+            move = await adaptive_forward_stride(planned_step, chunk_cm=command.stride_chunk_cm, require_permission=True, brake_cm=bands.reflex_hard_cm)
+            action = {"kind": ACTION_ADVANCE, "planned_step_cm": planned_step, "result": move}
+        elif decision.action == ACTION_CREEP:
+            planned_step = decision.planned_step_cm or command.min_step_cm
+            if command.speak:
+                actions.append({"kind": "speech", "cycle": cycle, "result": speak_text(f"Doorway is open ahead. Creeping about {planned_step:.0f} centimeters.")})
+            move = await adaptive_forward_stride(planned_step, chunk_cm=min(command.stride_chunk_cm, planned_step), require_permission=True, brake_cm=bands.reflex_hard_cm)
+            action = {"kind": ACTION_CREEP, "planned_step_cm": planned_step, "result": move}
+        elif decision.action == ACTION_EMERGENCY_ESCAPE:
+            await body.stop()
+            if command.speak:
+                actions.append({"kind": "speech", "cycle": cycle, "result": speak_text("Too close. Backing off and finding another way.")})
+            scan_turn = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=decision.reason)
+            action = {"kind": ACTION_EMERGENCY_ESCAPE, "result": scan_turn}
+        elif decision.action in (ACTION_SCAN_TURN, ACTION_ALIGN_TURN):
+            if command.speak:
+                line = "I see more room to one side. Turning to line up." if decision.action == ACTION_ALIGN_TURN else "Looking for a clear way through."
+                actions.append({"kind": "speech", "cycle": cycle, "result": speak_text(line)})
+            scan_turn = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=decision.reason)
+            action = {"kind": decision.action, "result": scan_turn}
+        else:  # ACTION_HOLD: a single ambiguous read; stop and re-confirm next cycle.
+            await body.stop()
+            action = {"kind": ACTION_HOLD}
 
-        action["cycle"] = cycle
-        action["front_distance_cm"] = front_value
+        action.update({
+            "cycle": cycle,
+            "phase": decision.phase,
+            "reason": decision.reason,
+            "raw_front_cm": decision.raw_front_cm,
+            "scan_center_cm": decision.scan_center_cm,
+            "decision_front_cm": decision.decision_front_cm,
+            # Kept for plan_summary/compact_action back-compat; reflects decided clearance.
+            "front_distance_cm": decision.decision_front_cm,
+            "blocked_streak": blocked_streak,
+            "clear_streak": clear_streak,
+        })
         if scan_summary:
             action["summary"] = scan_summary
         actions.append(action)
         await asyncio.sleep(command.pause_seconds)
         await body.stop()
-        if body.state.last_reflex_stop:
-            actions.append({"kind": "reflex-stop", "cycle": cycle, "result": body.state.last_reflex_stop})
-            blocked_streak += 1
-            if blocked_streak >= 3:
-                scan_turn = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason="recover after repeated reflex/blocked stops")
-                actions.append({"kind": "recovery-turn", "cycle": cycle, "result": scan_turn})
-                blocked_streak = 0
 
     await body.stop()
     final_sensors = body.sensors()
