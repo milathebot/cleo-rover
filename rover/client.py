@@ -414,7 +414,11 @@ def main(argv: list[str] | None = None) -> int:
             timeout=timeout,
         )
     elif args.cmd == "hallway-scout":
-        timeout = max(45.0, 15.0 + args.cycles * (args.pause_seconds + 5.0))
+        # Speech and camera/range scans make supervised autonomy runs slower than raw movement.
+        # Keep the HTTP client alive long enough for ElevenLabs narration instead of timing out
+        # while the Pi-side task is still safely stopping/scanning.
+        per_cycle = args.pause_seconds + (18.0 if args.speak else 6.0)
+        timeout = max(90.0 if args.speak else 45.0, 30.0 + args.cycles * per_cycle)
         result = request(
             args.base,
             "POST",
