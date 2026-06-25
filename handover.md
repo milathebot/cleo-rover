@@ -120,6 +120,20 @@ CLEO_ROVER_CONFIG=config/rover.hardware.floor.cautious.json CLEO_ROVER_MODE=hard
   uvicorn rover.service:app --port 8099
 ```
 
+On the deployed rover the body runs as a systemd unit, **`cleo-rover-body.service`**
+(not a hand-started `uvicorn`). Operate it with:
+
+```bash
+sudo systemctl restart cleo-rover-body      # apply a pull or a config edit
+journalctl -u cleo-rover-body -f            # logs
+sudo cat /proc/$(pgrep -f 'uvicorn rover.service')/environ | tr '\0' '\n' | grep CLEO_ROVER  # which config it booted
+```
+
+After a `git pull`, the running process keeps the **old** code in memory until you
+restart the unit — new endpoints 404'ing while `/health` works is the classic
+"didn't restart" symptom. Make sure exactly one unit owns `:8099`
+(`sudo ss -ltnp 'sport = :8099'`); a stale second uvicorn will keep serving old code.
+
 All your control is HTTP against `http://<pi>:8099`. There is also a CLI
 (`cleo-rover ...`) and an operator web panel at `/`.
 
@@ -157,13 +171,21 @@ and a `ready_for_supervised_drive` boolean. The condensed sequence:
 ## 5. Connecting as the mind
 
 ### 5.1 Point Pip at you
-Set env on the Pi (never commit keys). Pip uses an OpenAI-compatible chat endpoint:
+Set env on the body service (never commit keys). Pip uses an OpenAI-compatible chat
+endpoint. Any of three name sets work, first wins: `MIND_*` → `HERMES_*` →
+`CLEO_ROVER_HERMES_*` (the last are the **same names the Telegram agent +
+vision-label already use**, so one cred set wires the whole rover):
 
 ```bash
-export HERMES_API_BASE=http://<hermes-host>:<port>/v1   # or MIND_API_BASE
-export HERMES_API_KEY=...                                # if required
-export HERMES_MODEL=hermes-agent                         # or MIND_MODEL
+# project-prefixed names — reuse what the Telegram agent already has:
+export CLEO_ROVER_HERMES_API_BASE=http://<hermes-host>:<port>/v1
+export CLEO_ROVER_HERMES_API_KEY=...
+export CLEO_ROVER_HERMES_MODEL=hermes-agent
 ```
+
+For the live `cleo-rover-body.service`, set these as a drop-in so they persist:
+`sudo systemctl edit cleo-rover-body` → add `Environment=CLEO_ROVER_HERMES_API_BASE=...`
+(etc.) → `sudo systemctl restart cleo-rover-body`.
 
 `GET /mind/status` → `configured: true` when set. With nothing set, Pip runs fully
 offline on its deterministic policy (by design).

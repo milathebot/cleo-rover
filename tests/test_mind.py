@@ -92,3 +92,33 @@ def test_mind_step_falls_back_on_mind_error(monkeypatch):
     data = client.post("/mind/step?zone=office").json()
     assert data["source"] == "deterministic_fallback"
     assert data["mind_error"] == "boom"
+
+
+def test_mind_env_fallback_precedence(monkeypatch):
+    # The project-prefixed CLEO_ROVER_HERMES_* names (same ones the Telegram agent +
+    # vision-label use) configure the mind, so one cred set wires the whole rover.
+    for var in (
+        "MIND_API_BASE", "MIND_API_KEY", "MIND_MODEL",
+        "HERMES_API_BASE", "HERMES_API_KEY", "HERMES_MODEL",
+        "CLEO_ROVER_HERMES_API_BASE", "CLEO_ROVER_HERMES_API_KEY", "CLEO_ROVER_HERMES_MODEL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    assert mind.mind_configured() is False
+
+    monkeypatch.setenv("CLEO_ROVER_HERMES_API_BASE", "http://pi-host:8642/v1")
+    monkeypatch.setenv("CLEO_ROVER_HERMES_API_KEY", "k-cleo")
+    monkeypatch.setenv("CLEO_ROVER_HERMES_MODEL", "cleo-model")  # distinct from the "hermes-agent" default
+    assert mind.mind_configured() is True
+    base, key, model = mind._endpoint()
+    assert base == "http://pi-host:8642/v1" and key == "k-cleo" and model == "cleo-model"
+
+    # HERMES_* and MIND_* take precedence over CLEO_ROVER_HERMES_* when present.
+    monkeypatch.setenv("HERMES_API_BASE", "http://hermes:9000/v1")
+    monkeypatch.setenv("HERMES_API_KEY", "k-hermes")
+    monkeypatch.setenv("HERMES_MODEL", "hermes-model")
+    assert mind._endpoint() == ("http://hermes:9000/v1", "k-hermes", "hermes-model")
+    monkeypatch.setenv("MIND_API_BASE", "http://gateway:7000/v1")
+    monkeypatch.setenv("MIND_API_KEY", "k-mind")
+    monkeypatch.setenv("MIND_MODEL", "mind-model")
+    assert mind._endpoint() == ("http://gateway:7000/v1", "k-mind", "mind-model")

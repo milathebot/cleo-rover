@@ -7,8 +7,9 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 PROFILE="${1:-}"
-APP_DIR="/home/cleo/cleo-rover"
-SERVICE="cleo-rover.service"
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The live body service is cleo-rover-body.service (see deploy/systemd + handover.md).
+SERVICE="cleo-rover-body.service"
 OVERRIDE_DIR="/etc/systemd/system/${SERVICE}.d"
 OVERRIDE_FILE="${OVERRIDE_DIR}/override.conf"
 
@@ -21,8 +22,13 @@ case "$PROFILE" in
     CONFIG_PATH="${APP_DIR}/config/rover.hardware.floor.cautious.json"
     PROFILE_NAME="hardware-floor-cautious"
     ;;
+  local|tuned)
+    # The per-robot tuned config (gitignored). Calibration values live here.
+    CONFIG_PATH="${APP_DIR}/config/rover.hardware.local.json"
+    PROFILE_NAME="hardware-local-tuned"
+    ;;
   *)
-    echo "Usage: sudo scripts/set_rover_profile.sh presence|floor-cautious" >&2
+    echo "Usage: sudo scripts/set_rover_profile.sh presence|floor-cautious|local" >&2
     exit 2
     ;;
 esac

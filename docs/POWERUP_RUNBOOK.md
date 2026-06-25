@@ -7,8 +7,15 @@ calls the mind (Hermes) makes.
 - `[Noot]` = physical / human / config edit (lift wheels, multimeter, edit a profile, hand on stop).
 - `[Hermes]` = an API call against the body service (default `http://<pi>:8099`).
 - **GATE** = must pass before continuing. Do not skip.
-- Config-flag changes mean *edit the floor-cautious profile JSON → restart the
-  service* (config loads at startup). Profile switches: `sudo scripts/set_rover_profile.sh <presence|floor-cautious>`.
+- The live body service is **`cleo-rover-body.service`**. Config loads at startup,
+  so any config-flag change means *edit the config the service booted with → `sudo
+  systemctl restart cleo-rover-body`*. If this rover runs a tuned
+  `config/rover.hardware.local.json`, edit **that** file; otherwise use the profile
+  helper (it drives the same unit and restarts it):
+  `sudo scripts/set_rover_profile.sh <presence|floor-cautious|local>`.
+- After any `git pull`, **restart the unit** — a still-running process serves the old
+  code (new endpoints 404 while `/health` works). Confirm one owner of `:8099`:
+  `sudo ss -ltnp 'sport = :8099'`.
 
 Reference detail: [`../handover.md`](../handover.md) (operating manual) and
 [`HANDOVER_2026-06-25_PIP_FNK0043_AUDIT_AND_BRINGUP.md`](HANDOVER_2026-06-25_PIP_FNK0043_AUDIT_AND_BRINGUP.md)
@@ -30,9 +37,13 @@ Reference detail: [`../handover.md`](../handover.md) (operating manual) and
 ## Phase 1 — Boot, no motion
 2. `[Noot]` Battery pack in; rover on a stable surface with **wheels lifted**; hand near power. Power on.
 3. `[Noot]` Start in the **no-motor presence profile**:
-   `CLEO_ROVER_CONFIG=config/rover.hardware.presence.json CLEO_ROVER_MODE=hardware uvicorn rover.service:app --port 8099`
-   (or `sudo scripts/set_rover_profile.sh presence`).
-4. `[Noot]` Export the mind env (`HERMES_API_BASE` / `HERMES_API_KEY` / `HERMES_MODEL`).
+   `sudo scripts/set_rover_profile.sh presence` (restarts `cleo-rover-body` onto the
+   presence config). For a one-off bench run instead:
+   `CLEO_ROVER_CONFIG=config/rover.hardware.presence.json CLEO_ROVER_MODE=hardware uvicorn rover.service:app --port 8099`.
+   Confirm exactly one process owns `:8099` (`sudo ss -ltnp 'sport = :8099'`).
+4. `[Noot]` Set the mind creds on the body unit as a drop-in (`sudo systemctl edit
+   cleo-rover-body` → `Environment=CLEO_ROVER_HERMES_API_BASE=…` + `_API_KEY` +
+   `_MODEL`, the same names the Telegram agent uses), then restart it.
    `[Hermes]` `GET /mind/status` → `configured: true`.
 5. `[Hermes]` `GET /health` and `GET /sensors` → service up; `ultrasonic_ready: true`,
    three line-sensor values, plausible `battery_percent`, camera ready.

@@ -113,7 +113,7 @@ CLEO_ROVER_ELEVENLABS_OUTPUT_FORMAT=mp3_44100_128
 HERMES_PIP_SPEAK_RESPONSE=true
 ```
 
-Do not commit secrets. TTS config lives in the Pi systemd override, e.g. `/etc/systemd/system/cleo-rover.service.d/zz-tts.conf`.
+Do not commit secrets. TTS config lives in the Pi systemd override, e.g. `/etc/systemd/system/cleo-rover-body.service.d/zz-tts.conf`.
 
 ## Shutdown state
 
@@ -122,7 +122,7 @@ The session ended because the battery was getting low. Recommended shutdown sequ
 ```bash
 cleo-rover stop
 cleo-rover turret --pan-deg 0
-sudo systemctl stop cleo-rover.service
+sudo systemctl stop cleo-rover-body.service
 sudo shutdown -h now
 ```
 
@@ -134,7 +134,7 @@ On the Pi:
 
 ```bash
 cd ~/cleo-rover
-sudo systemctl start cleo-rover.service
+sudo systemctl start cleo-rover-body.service
 sleep 3
 cleo-rover status
 cleo-rover sensors
@@ -150,7 +150,7 @@ git fetch origin
 git reset --hard origin/master
 . .venv/bin/activate
 pip install -e '.[pi]'
-sudo systemctl restart cleo-rover.service
+sudo systemctl restart cleo-rover-body.service
 sleep 3
 sudo scripts/set_rover_profile.sh floor-cautious
 sleep 2
