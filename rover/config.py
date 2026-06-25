@@ -89,6 +89,14 @@ class SafetyConfig(BaseModel):
     # to max(45, ...), which made approaching a doorway (closing inside 45cm)
     # structurally impossible. Configurable + scoped per profile now.
     reflex_hard_cm: float = 30.0
+    # Cliff (downward IR) + bumper reflexes. OFF by default because the IR polarity
+    # and bumper wiring must be verified on the physical robot first; flip these on
+    # in the floor-cautious profile once `line_drop_value` matches your sensors.
+    cliff_reflex_enabled: bool = False
+    bumper_reflex_enabled: bool = False
+    # Digital line-sensor value that means "no reflection / no floor" (edge/drop).
+    # Polarity is hardware-specific; verify with `cleo-rover sensors` over a real edge.
+    line_drop_value: int = 1
     bench_safe_no_motors: bool = True
 
 

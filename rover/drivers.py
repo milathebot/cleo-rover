@@ -41,6 +41,44 @@ def should_reflex_stop(command: DriveCommand, sensors: dict[str, Any], *, thresh
     return False, None
 
 
+def should_cliff_stop(sensors: dict[str, Any], *, enabled: bool, drop_value: int) -> tuple[bool, str | None]:
+    """Floor-drop reflex from the downward IR line sensors.
+
+    Requires ALL line sensors to read the "no reflection / no floor" value, so a
+    single dark line under one sensor (line-following) is not mistaken for an
+    edge. Polarity is hardware-specific and configured via safety.line_drop_value;
+    disabled by default until verified on the robot.
+    """
+    if not enabled:
+        return False, None
+    line = sensors.get("line_sensors")
+    if not isinstance(line, dict) or not line:
+        return False, None
+    try:
+        all_drop = all(int(value) == int(drop_value) for value in line.values())
+    except (TypeError, ValueError):
+        return False, None
+    if all_drop:
+        return True, f"cliff/floor-drop reflex: all line sensors read no-floor ({drop_value})"
+    return False, None
+
+
+def should_bump_stop(sensors: dict[str, Any], *, enabled: bool) -> tuple[bool, str | None]:
+    """Contact reflex from the front bump switches (value 1 == pressed)."""
+    if not enabled:
+        return False, None
+    bumpers = sensors.get("bumpers")
+    if not isinstance(bumpers, dict) or not bumpers:
+        return False, None
+    try:
+        hit = [name for name, value in bumpers.items() if int(value) == 1]
+    except (TypeError, ValueError):
+        return False, None
+    if hit:
+        return True, f"bump reflex: bumper(s) {hit} triggered"
+    return False, None
+
+
 def display_spi_pins(bus: int, device: int, cs_pin: int | None = None) -> dict[str, int | None]:
     if bus == 1:
         chip_selects = {0: 18, 1: 17, 2: 16}
@@ -105,6 +143,8 @@ class RoverBody:
         return FreenoveSensorReader(
             front_stop_distance_cm=self.config.safety.front_stop_distance_cm,
             adc_voltage_coefficient=self.config.sensors.adc_voltage_coefficient,
+            bumper_left_pin=self.config.sensors.bumper_left_pin,
+            bumper_right_pin=self.config.sensors.bumper_right_pin,
         ).snapshot()
 
     def front_distance_median(self, samples: int | None = None) -> float | None:
@@ -122,9 +162,21 @@ class RoverBody:
             return False
         sensors = self._sensor_snapshot()
         reflex, reason = should_reflex_stop(command, sensors, threshold_cm=self._reflex_threshold_cm())
+        kind = "ultrasonic"
+        if not reflex:
+            cliff, cliff_reason = should_cliff_stop(
+                sensors, enabled=self.config.safety.cliff_reflex_enabled, drop_value=self.config.safety.line_drop_value
+            )
+            if cliff:
+                reflex, reason, kind = True, cliff_reason, "cliff"
+        if not reflex:
+            bump, bump_reason = should_bump_stop(sensors, enabled=self.config.safety.bumper_reflex_enabled)
+            if bump:
+                reflex, reason, kind = True, bump_reason, "bumper"
         if reflex:
             self.state.last_reflex_stop = {
                 "reason": reason,
+                "kind": kind,
                 "front_distance_cm": sensors.get("front_distance_cm"),
                 "threshold_cm": self._reflex_threshold_cm(),
                 "drive": command.model_dump(),
@@ -222,6 +274,8 @@ class RoverBody:
             "front_stop_distance_cm": self.config.safety.front_stop_distance_cm,
             "line_sensors": None,
             "line_sensors_ready": False,
+            "bumpers": None,
+            "bumpers_ready": False,
             "ultrasonic_ready": False,
             "adc_channels": None,
             "adc_ready": False,
@@ -233,6 +287,8 @@ class RoverBody:
             live = FreenoveSensorReader(
                 front_stop_distance_cm=self.config.safety.front_stop_distance_cm,
                 adc_voltage_coefficient=self.config.sensors.adc_voltage_coefficient,
+                bumper_left_pin=self.config.sensors.bumper_left_pin,
+                bumper_right_pin=self.config.sensors.bumper_right_pin,
             ).snapshot()
 
         return {
@@ -242,6 +298,8 @@ class RoverBody:
             "front_stop_distance_cm": self.config.safety.front_stop_distance_cm,
             "line_sensors": live.get("line_sensors"),
             "line_sensors_ready": live.get("line_sensors_ready", False),
+            "bumpers": live.get("bumpers"),
+            "bumpers_ready": live.get("bumpers_ready", False),
             "ultrasonic_ready": live.get("ultrasonic_ready", False),
             "adc_channels": live.get("adc_channels"),
             "adc_ready": live.get("adc_ready", False),

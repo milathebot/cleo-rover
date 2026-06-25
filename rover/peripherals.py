@@ -71,9 +71,17 @@ def estimate_battery_percent(voltage: float | None) -> float | None:
 
 
 class FreenoveSensorReader:
-    def __init__(self, front_stop_distance_cm: float, adc_voltage_coefficient: float = 5.2) -> None:
+    def __init__(
+        self,
+        front_stop_distance_cm: float,
+        adc_voltage_coefficient: float = 5.2,
+        bumper_left_pin: int | None = None,
+        bumper_right_pin: int | None = None,
+    ) -> None:
         self.front_stop_distance_cm = front_stop_distance_cm
         self.adc_voltage_coefficient = adc_voltage_coefficient
+        self.bumper_left_pin = bumper_left_pin
+        self.bumper_right_pin = bumper_right_pin
 
     def read_line_sensors(self) -> dict[str, int] | None:
         DigitalInputDevice, _ = _import_gpiozero()
@@ -81,6 +89,19 @@ class FreenoveSensorReader:
         devices = {}
         try:
             # Pull-up matched the user's focused test; sensors are optional.
+            devices = {name: DigitalInputDevice(pin, pull_up=True) for name, pin in pins.items()}
+            return {name: int(device.value) for name, device in devices.items()}
+        finally:
+            for device in devices.values():
+                device.close()
+
+    def read_bumpers(self) -> dict[str, int] | None:
+        pins = {name: pin for name, pin in (("left", self.bumper_left_pin), ("right", self.bumper_right_pin)) if pin is not None}
+        if not pins:
+            return None
+        DigitalInputDevice, _ = _import_gpiozero()
+        devices = {}
+        try:
             devices = {name: DigitalInputDevice(pin, pull_up=True) for name, pin in pins.items()}
             return {name: int(device.value) for name, device in devices.items()}
         finally:
@@ -150,6 +171,13 @@ class FreenoveSensorReader:
             out["line_sensors_ready"] = line is not None
         except Exception as exc:  # pragma: no cover - hardware-dependent
             out["errors"]["line_sensors"] = repr(exc)
+        try:
+            bumpers = self.read_bumpers()
+            out["bumpers"] = bumpers
+            out["bumpers_ready"] = bumpers is not None
+        except Exception as exc:  # pragma: no cover - hardware-dependent
+            out["bumpers_ready"] = False
+            out["errors"]["bumpers"] = repr(exc)
         try:
             adc = self.read_adc()
             out["adc_channels"] = {str(k): v for k, v in adc.items()}
