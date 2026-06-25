@@ -4,6 +4,17 @@ Body-control service for Cleo Rover Mk1.
 
 The Raspberry Pi 4B is the current body controller for the stock Freenove chassis. Hermes/Cleo on the PC is the brain.
 
+## Current audit handover
+
+Before changing hallway/autonomy code, read [`agent.md`](agent.md). It is the repo-audit handover for Codex/Claude agents and summarizes the latest real Pip hallway-scout run, suspected doorway-navigation issues, and open questions around safer brain/Hermes connectivity.
+
+Latest physical focus:
+
+- Pip is running supervised `hallway-scout` missions from `office-doorway`.
+- Pi-local safety remains authoritative: movement grants, short bounded chunks, scan-before-move, stop after chunks, and ultrasonic reflex stop.
+- Current suspected issues to audit before patching are stale `last_reflex_stop` handling, raw front readings overriding fresh scan-center data, missing doorway state/hysteresis, and live vision not reaching `pip-brain` as actionable context.
+- Hermes/Cleo should provide high-level perception/planning only; the Pi must validate/refuse every movement intent locally.
+
 ## What works on the current Pi 4B rover
 
 This repo runs in safe simulator and hardware-presence modes:
