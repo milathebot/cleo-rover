@@ -34,6 +34,11 @@ from . import explore
 from . import arbiter
 from . import social
 from . import stuck
+from . import vfh as vfh_mod
+from . import consolidation as consolidation_mod
+from .occupancy import OccupancyGrid, grid_config_from
+from .topo_map import TopoMap
+from .wall_follow import wall_follow_config_from, wall_follow_step, ACTION_INSIDE_CORNER
 from .models import Goal
 from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, HallwayScoutCommand, LineFollowCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .line_follow import decide_line_follow, search_turn
@@ -93,6 +98,49 @@ pip_interrupts: list[dict] = list(store.load_json("pip_interrupts") or [])
 def save_pip_runtime() -> None:
     store.save_json("pip_state", pip_state)
     store.save_json("pip_interrupts", pip_interrupts[-50:])
+
+
+# --- Tier 3 nav/mapping singletons --------------------------------------------
+# A body-frame rolling occupancy grid (advisory; informs where to go, never
+# relaxes a reflex) and a topological place graph loaded from the store. Both are
+# rebuildable; the grid accumulates only when CONFIG.nav.mapping_enabled is on.
+NAV_GRID = OccupancyGrid(config=grid_config_from(CONFIG.nav))
+VFH_CFG = vfh_mod.vfh_config_from(CONFIG.nav)
+WALL_CFG = wall_follow_config_from(CONFIG.nav)
+_topo_data = store.load_json("topo_map")
+TOPO = (
+    TopoMap.from_dict(_topo_data)
+    if _topo_data
+    else TopoMap(sonar_thresh=CONFIG.nav.topo_sonar_thresh, hist_thresh=CONFIG.nav.topo_hist_thresh, min_votes=CONFIG.nav.topo_min_votes)
+)
+_last_topo_node: str | None = None
+_heartbeat_count = 0
+
+
+def save_topo() -> None:
+    store.save_json("topo_map", TOPO.to_dict())
+
+
+def sweep_samples_from_summary(summary: dict) -> list[tuple[float, float | None]]:
+    """Convert a scan summary's samples into VFH/grid (bearing, distance_cm) pairs."""
+    out: list[tuple[float, float | None]] = []
+    for s in summary.get("samples") or []:
+        try:
+            out.append((float(s["bearing_deg"]), float(s["distance_cm"])))
+        except (TypeError, ValueError, KeyError):
+            continue
+    return out
+
+
+def sonar_signature_from_summary(summary: dict, angles: list[float]) -> list[float | None]:
+    """A fixed-order range vector (place fingerprint) at the requested angles."""
+    by_bearing = {round(float(s["bearing_deg"])): float(s["distance_cm"]) for s in (summary.get("samples") or []) if s.get("bearing_deg") is not None and s.get("distance_cm") is not None}
+    sig: list[float | None] = []
+    for a in angles:
+        key = round(float(a))
+        match = next((v for b, v in by_bearing.items() if abs(b - key) <= 3), None)
+        sig.append(match)
+    return sig
 
 app = FastAPI(title="Cleo Rover Mk1 Body Service", version="0.1.0")
 
@@ -257,8 +305,18 @@ def life_heartbeat_step() -> dict:
     idle = remember_event(RoverEvent(kind=RoverEventKind.idle_tick, source="heartbeat", timestamp=time.time()))
     if pip_state.get("mode") != "sleep" and pip_state.get("mood") != "low_power":
         pip_state["mood"] = autonomy.state.mood
+    # Opportunistic memory consolidation while idle: distill episodic sightings
+    # into durable facts every N heartbeats (cheap, local SQLite + arithmetic).
+    global _heartbeat_count
+    _heartbeat_count += 1
+    consolidated = None
+    if CONFIG.nav.consolidation_enabled and _heartbeat_count % max(1, CONFIG.nav.consolidation_interval_heartbeats) == 0:
+        try:
+            consolidated = run_consolidation()
+        except Exception:
+            consolidated = None
     save_pip_runtime()
-    return {"ok": True, "feelings": pip_feelings(), "idle_event_at": idle.timestamp}
+    return {"ok": True, "feelings": pip_feelings(), "idle_event_at": idle.timestamp, "consolidated": consolidated}
 
 
 def drive_safety(command: DriveCommand, *, require_permission: bool = False) -> tuple[bool, str, DriveCommand]:
@@ -1561,6 +1619,226 @@ async def mind_step(zone: str = "office") -> dict:
     return {"ok": True, "source": "deterministic_fallback", "mind_used": False, "mind_error": mind_result.get("error"), "intent": command.model_dump(), "result": result}
 
 
+# --------------------------------------------------------------------------- #
+# Tier 3 navigation: VFH+ steering, occupancy-grid frontiers, topological place
+# graph, wall-following, and memory consolidation. All ADVISORY -- movement still
+# flows through grant + armed motors + the authoritative reflex tier.
+# --------------------------------------------------------------------------- #
+def ingest_summary_into_grid(summary: dict) -> None:
+    """Feed a scan into the persistent rolling grid (only when mapping is on)."""
+    if not CONFIG.nav.mapping_enabled:
+        return
+    samples = sweep_samples_from_summary(summary)
+    if samples:
+        NAV_GRID.update_from_sweep(samples)
+
+
+def vfh_turn_deg(result, *, blocked_streak: int = 0) -> float:
+    """Convert a VFH steering bearing into a bounded open-loop rotate (deg)."""
+    if result.blocked or result.chosen_bearing_deg is None:
+        return 18.0 if blocked_streak % 2 == 0 else -18.0
+    bearing = float(result.chosen_bearing_deg)
+    if abs(bearing) < 8.0:
+        return 0.0
+    deg = max(-25.0, min(25.0, bearing * 0.45))
+    if abs(deg) < 12.0:
+        deg = 12.0 if deg >= 0 else -12.0
+    if blocked_streak >= 3:
+        deg += 6.0 if deg >= 0 else -6.0
+    return max(-32.0, min(32.0, deg))
+
+
+async def reactive_choose_turn(summary: dict, *, blocked_streak: int = 0) -> dict:
+    """Pick a recovery/steering turn. Uses VFH+ when nav.use_vfh_steering is on,
+    else the legacy widest-gap heuristic. Same return contract either way."""
+    if not CONFIG.nav.use_vfh_steering:
+        return await reactive_turn_toward(summary.get("best"), blocked_streak=blocked_streak)
+    result = vfh_mod.steer(sweep_samples_from_summary(summary), cfg=VFH_CFG, target_bearing_deg=0.0)
+    deg = vfh_turn_deg(result, blocked_streak=blocked_streak)
+    vfh_detail = {"chosen_bearing_deg": result.chosen_bearing_deg, "blocked": result.blocked, "free_runs": result.free_runs, "reason": result.reason}
+    if abs(deg) < 1.0:
+        return {"ok": True, "skipped": True, "reason": "vfh: gap already centered", "deg": deg, "vfh": vfh_detail}
+    turn = await rotate_step(RotateStepCommand(deg=deg, require_permission=True))
+    turn["vfh"] = vfh_detail
+    return turn
+
+
+@app.post("/nav/plan")
+async def nav_plan(command: MapScanCommand, target_bearing_deg: float = 0.0) -> dict:
+    """Read-only smart-nav plan: sweep -> VFH+ body-frame steering + occupancy-grid
+    frontiers. No movement (the operator/mind can act on the advice via a task)."""
+    scan, summary = await reactive_escape_scan(command.zone, command.angles)
+    samples = sweep_samples_from_summary(summary)
+    steer = vfh_mod.steer(samples, cfg=VFH_CFG, target_bearing_deg=target_bearing_deg)
+    snap = OccupancyGrid(config=grid_config_from(CONFIG.nav))
+    snap.update_from_sweep(samples)
+    ingest_summary_into_grid(summary)
+    return {
+        "ok": True,
+        "zone": command.zone,
+        "samples": samples,
+        "steering": {
+            "chosen_bearing_deg": steer.chosen_bearing_deg,
+            "blocked": steer.blocked,
+            "reason": steer.reason,
+            "free_runs": steer.free_runs,
+            "candidates": steer.candidates,
+        },
+        "frontiers": snap.frontiers(min_cluster=3),
+        "grid": snap.stats(),
+        "advisory": "VFH+ body-frame steering + occupancy-grid frontiers. Movement still requires a grant + armed motors + reflex clearance.",
+    }
+
+
+@app.get("/nav/grid")
+def nav_grid() -> dict:
+    return {"ok": True, "stats": NAV_GRID.stats(), "ascii": NAV_GRID.ascii_map(), "frontiers": NAV_GRID.frontiers(min_cluster=3), "mapping_enabled": CONFIG.nav.mapping_enabled}
+
+
+@app.post("/nav/grid/reset")
+def nav_grid_reset() -> dict:
+    global NAV_GRID
+    NAV_GRID = OccupancyGrid(config=grid_config_from(CONFIG.nav))
+    return {"ok": True, "reset": True, "stats": NAV_GRID.stats()}
+
+
+@app.post("/topo/observe")
+async def topo_observe(command: MapScanCommand, name: str | None = None, action: str = "forward") -> dict:
+    """Fingerprint the current place (sonar signature) and add/recognize it in the
+    topological graph, linking an edge from the last place. Relocalizes on a match."""
+    global _last_topo_node
+    if not CONFIG.nav.topo_enabled:
+        return {"ok": False, "reason": "topo graph disabled (nav.topo_enabled=false)"}
+    scan, summary = await reactive_escape_scan(command.zone, command.angles)
+    sig = sonar_signature_from_summary(summary, command.angles)
+    result = TOPO.observe(sonar_sig=sig, last_node_id=_last_topo_node, action=action, now=time.time(), name=name or command.zone)
+    _last_topo_node = result["node_id"]
+    save_topo()
+    return {"ok": True, "result": result, "signature": sig, "graph": TOPO.summary()}
+
+
+@app.get("/topo/graph")
+def topo_graph() -> dict:
+    return {"ok": True, "summary": TOPO.summary(), "current_node": _last_topo_node, "graph": TOPO.to_dict()}
+
+
+@app.get("/topo/plan")
+def topo_plan(to: str, frm: str | None = None) -> dict:
+    start = frm or _last_topo_node
+    if not start:
+        return {"ok": False, "reason": "no current place; run /topo/observe first"}
+    return {"ok": True, **TOPO.plan(start, to)}
+
+
+@app.post("/topo/merge")
+def topo_merge() -> dict:
+    merged = TOPO.merge_duplicates()
+    save_topo()
+    return {"ok": True, "merged": merged, "graph": TOPO.summary()}
+
+
+def _spatial_to_episodes() -> list[dict]:
+    """Map remembered sightings into consolidation episodes (label@zone, with the
+    item's observation count so a repeatedly-seen landmark can become a fact)."""
+    episodes: list[dict] = []
+    for item in store.list_spatial(300):
+        if not item.zone or item.kind == "range_scan":
+            continue  # raw range pings are not semantic landmarks
+        episodes.append(
+            {
+                "label": item.label,
+                "zone": item.zone,
+                "confidence": item.confidence,
+                "timestamp": item.last_seen_at or time.time(),
+                "bearing_deg": item.bearing_deg,
+                "count": item.observations,
+                "detail": item.notes,
+            }
+        )
+    return episodes
+
+
+def run_consolidation() -> dict:
+    """Distill episodic spatial memory into durable semantic facts (decay/
+    reinforce/promote/prune) and persist them."""
+    cfg = consolidation_mod.ConsolidationConfig(promote_n=CONFIG.nav.consolidation_promote_n)
+    facts = consolidation_mod.facts_from_dicts(store.list_facts(500))
+    res = consolidation_mod.consolidate(_spatial_to_episodes(), facts, now=time.time(), cfg=cfg)
+    store.save_facts(consolidation_mod.facts_to_dicts(res["facts"]))
+    return {"ok": True, "promoted": res["promoted"], "reinforced": res["reinforced"], "pruned": res["pruned"], "fact_count": res["fact_count"]}
+
+
+@app.post("/memory/consolidate")
+def memory_consolidate() -> dict:
+    return run_consolidation()
+
+
+@app.get("/memory/facts")
+def memory_facts(limit: int = 100) -> dict:
+    return {"ok": True, "facts": store.list_facts(limit)}
+
+
+@app.post("/vision/flow")
+def vision_flow() -> dict:
+    """Advisory optical-flow stall/looming cue. Needs OpenCV + a live camera; in
+    sim/dev it reports unavailable (the pure logic is unit-tested separately)."""
+    available = vision_service.optical_flow_available() and body.mode == "hardware"
+    return {
+        "ok": True,
+        "available": available,
+        "enabled": CONFIG.nav.flow_stall_enabled,
+        "note": "Optical flow confirms stalls + looming on hardware; advisory only, never relaxes a reflex.",
+        "backends": vision_service.vision_backends(),
+    }
+
+
+@app.post("/tasks/wall-follow")
+async def wall_follow_task(zone: str = "wall", side: str = "left", allow_movement: bool = False, max_cycles: int = 20, duration_seconds: int = 45) -> dict:
+    """Trace a wall at a setpoint distance (best coverage primitive without pose).
+
+    Pans the sonar to the side for the perpendicular reading and forward for
+    inside-corner detection, then PD-follows. Gated by nav.wall_follow_enabled."""
+    global movement_grant
+    if not CONFIG.nav.wall_follow_enabled:
+        return {"ok": False, "reason": "wall-follow disabled (nav.wall_follow_enabled=false)"}
+    side = "left" if side != "right" else "right"
+    side_angle = max(CONFIG.turret.pan_min_deg, min(CONFIG.turret.pan_max_deg, 70.0 if side == "left" else -70.0))
+    grant = MovementPermissionCommand(task=f"wall-follow:{zone}", allow_movement=allow_movement, duration_seconds=duration_seconds, max_linear=max(0.1, WALL_CFG.base_linear), max_turn=WALL_CFG.max_turn, notes="Pi-side PD wall follow")
+    movement_grant = grant.model_dump() | {"expires_at": time.time() + grant.duration_seconds, "active": grant.allow_movement}
+    event = store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="wall_follow", label=grant.task, payload=movement_grant | {"zone": zone, "side": side}))
+    events.add(event)
+    plan: list[dict] = []
+    prev_error: float | None = None
+    deadline = time.time() + duration_seconds
+    try:
+        for cycle in range(max_cycles):
+            if time.time() >= deadline:
+                plan.append({"kind": "halt", "reason": "duration elapsed"})
+                break
+            await body.set_turret(TurretCommand(pan_deg=side_angle))
+            await asyncio.sleep(0.12)
+            side_cm = normalize_distance_cm(body.front_distance_median())
+            await body.set_turret(TurretCommand(pan_deg=0))
+            await asyncio.sleep(0.08)
+            front_cm = normalize_distance_cm(body.front_distance_median())
+            decision = wall_follow_step(side_cm=side_cm, front_cm=front_cm, prev_error_cm=prev_error, side=side, cfg=WALL_CFG)
+            prev_error = decision.error_cm
+            plan.append({"kind": "decision", "cycle": cycle + 1, "action": decision.action, "side_cm": side_cm, "front_cm": front_cm, "turn": decision.turn, "reason": decision.reason})
+            if not allow_movement:
+                plan.append({"kind": "scan-only", "reason": "movement not permitted"})
+                break
+            drive = await guarded_drive(DriveCommand(linear=decision.linear, turn=decision.turn, duration_ms=160), require_permission=True)
+            plan.append({"kind": "drive", "result": drive})
+            fresh_reflex = body.consume_reflex_stop()
+            if fresh_reflex:
+                plan.append({"kind": "reflex-stop", "result": fresh_reflex})
+            await asyncio.sleep(0.1)
+    finally:
+        await body.set_turret(TurretCommand(pan_deg=0))
+        await body.stop()
+    return {"ok": True, "side": side, "zone": zone, "plan": plan, "task": movement_grant | {"zone": zone}}
+
+
 @app.post("/tasks/reactive-explore")
 async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
     """Freenove-style local obstacle avoidance loop.
@@ -1613,7 +1891,7 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
         if distance_value is None:
             scan, summary = await reactive_escape_scan(command.zone, command.scan_angles)
             plan.append({"kind": "scan", "reason": "front range unknown", "summary": summary})
-            turn = await reactive_turn_toward(summary.get("best"), blocked_streak=blocked_streak)
+            turn = await reactive_choose_turn(summary, blocked_streak=blocked_streak)
             plan.append({"kind": "turn", "reason": "range unknown", "result": turn})
             await asyncio.sleep(0.08)
             continue
@@ -1628,7 +1906,7 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
                 await asyncio.sleep(0.25)
             scan, summary = await reactive_escape_scan(command.zone, command.scan_angles)
             plan.append({"kind": "scan", "reason": "emergency escape", "summary": summary, "result": scan})
-            turn = await reactive_turn_toward(summary.get("best"), blocked_streak=blocked_streak)
+            turn = await reactive_choose_turn(summary, blocked_streak=blocked_streak)
             plan.append({"kind": "turn", "reason": "emergency escape", "result": turn})
             await asyncio.sleep(0.15)
             continue
@@ -1650,7 +1928,7 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
                 reverse = await guarded_drive(DriveCommand(linear=-0.24, turn=0, duration_ms=180), require_permission=True)
                 plan.append({"kind": "reverse", "reason": "blocked streak", "result": reverse})
                 await asyncio.sleep(0.2)
-            turn = await reactive_turn_toward(summary.get("best"), blocked_streak=blocked_streak)
+            turn = await reactive_choose_turn(summary, blocked_streak=blocked_streak)
             plan.append({"kind": "turn", "reason": "front blocked", "result": turn})
             await asyncio.sleep(0.12)
             continue
@@ -1662,7 +1940,7 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
             best = summary.get("best")
             center = summary.get("center")
             if best and (center is None or float(best["distance_cm"]) > float(center["distance_cm"]) + 20):
-                turn = await reactive_turn_toward(best, blocked_streak=blocked_streak)
+                turn = await reactive_choose_turn(summary, blocked_streak=blocked_streak)
                 plan.append({"kind": "turn", "reason": "better side clearance", "result": turn})
             else:
                 plan.append({"kind": "hold", "reason": "no side sufficiently better"})

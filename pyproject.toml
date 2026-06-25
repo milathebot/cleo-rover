@@ -41,6 +41,8 @@ vision = [
     "numpy>=1.24",
     "tflite-runtime>=2.14; platform_machine=='aarch64'",
     "picamera2>=0.3; platform_machine=='aarch64'",
+    # Sparse optical flow (stall/looming confirmation). Headless build = no GUI deps.
+    "opencv-python-headless>=4.8; platform_machine=='aarch64'",
 ]
 
 # Optional offline voice (wake word + STT). See rover/voice_daemon.py.

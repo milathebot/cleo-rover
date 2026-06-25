@@ -65,8 +65,35 @@ people/time, auto self-preservation (low battery → return-to-charger), a goal/
 mission layer the LLM mind can set (`/pip/goal`, `set_goal`), person/pet social
 reactions, quiet-hours obedience, thermal back-off, and a stuck-escalation ladder.
 
+## Tier 3: proprietary mapping & navigation (no LiDAR)
+
+A body-frame "smart nav" brain built for our exact sensors (no LiDAR/encoders/IMU),
+following the published cheap-robot playbook:
+
+- **Rolling occupancy grid** (`rover/occupancy.py`) — robot-centric log-odds map
+  with a sonar inverse sensor model (wide-FREE / narrow-OCCUPIED cone) + frontier
+  detection. Self-heals as Pip drifts instead of smearing like a global map.
+- **VFH+ steering** (`rover/vfh.py`) — polar-histogram obstacle avoidance from one
+  sonar sweep with robot-width safety, hysteresis, and a goal/commitment cost.
+  Drift-immune (body frame); fixes doorway oscillation properly.
+- **Wall-following** (`rover/wall_follow.py`) — PD + corner handling; best coverage
+  primitive without pose.
+- **Optical-flow stall/looming** (`rover/vision_service.py`) — sparse Lucas-Kanade
+  confirms "am I actually moving?" and flags looming the narrow sonar misses.
+- **Topological place graph** (`rover/topo_map.py`) — places fingerprinted by a
+  fused sonar+visual+IR signature, recognized by ≥2-of-3 voting so revisits reset
+  drift; plan routes by name ("go to kitchen").
+- **Memory consolidation** (`rover/consolidation.py`) — episodic sightings decay/
+  reinforce/promote into durable facts ("the charger is in the office").
+
+Endpoints (all sim-safe; movement still gated): `/nav/plan`, `/nav/grid`,
+`/topo/observe`, `/topo/graph`, `/topo/plan`, `/memory/consolidate`, `/memory/facts`,
+`/tasks/wall-follow`, `/vision/flow`. New config section `nav` (all flags default
+**off**). All advisory — none can relax a reflex. Enable guide:
+[`docs/HANDOVER_2026-06-25_PIP_TIER3_NAV_MAPPING.md`](docs/HANDOVER_2026-06-25_PIP_TIER3_NAV_MAPPING.md).
+
 Everything is verifiable now in simulator + unit tests (`python -m pytest -q`,
-191 passing). Only physical *calibration + deliberate enablement* is left for
+254 passing). Only physical *calibration + deliberate enablement* is left for
 supervised hardware runs — odometry coefficients (UMBmark), vision FPS/threshold,
 USB-mic levels/wake-word, verifying IR/bumper polarity before enabling the cliff/
 bumper reflexes, and turning on the arbiter. None are on the safety-critical path
@@ -204,6 +231,17 @@ POST /pip/arbiter/tick
 GET  /pip/goal
 POST /pip/goal
 DELETE /pip/goal
+POST /nav/plan
+GET  /nav/grid
+POST /nav/grid/reset
+POST /topo/observe
+GET  /topo/graph
+GET  /topo/plan
+POST /topo/merge
+POST /memory/consolidate
+GET  /memory/facts
+POST /vision/flow
+POST /tasks/wall-follow
 ```
 
 ## Autonomy phases implemented

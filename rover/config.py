@@ -166,6 +166,76 @@ class OdometryConfig(BaseModel):
     range_samples: int = Field(default=5, ge=1, le=15)
 
 
+class NavConfig(BaseModel):
+    """Tier 3 mapping/navigation backbone: a body-frame rolling occupancy grid,
+    VFH+ steering, wall-following, optical-flow stall confirmation, a topological
+    place graph, and memory consolidation.
+
+    All of this is ADVISORY -- it informs *where/how* to move; it never relaxes
+    the Pi-local reflex/cliff/bumper stops. Behaviour-changing flags ship OFF so
+    the branch merges 'dark' and is enabled per the hardware handover after light
+    supervised testing. The read-only planning endpoints (/nav/plan, /topo/*,
+    /memory/*) work regardless of the flags.
+    """
+
+    # --- behaviour flags (default OFF; flip after supervised testing) ---
+    use_vfh_steering: bool = False  # reactive-explore picks turns via VFH+ instead of widest-gap
+    mapping_enabled: bool = False  # accumulate the persistent occupancy grid across moves
+    wall_follow_enabled: bool = False  # allow the wall-follow task to drive
+    flow_stall_enabled: bool = False  # consult camera optical flow to confirm stalls (needs cv2)
+    topo_enabled: bool = True  # build/serve the topological place graph (no movement)
+    consolidation_enabled: bool = True  # distill episodic memory into facts on heartbeat
+    consolidation_interval_heartbeats: int = Field(default=30, ge=1, le=1000)
+    consolidation_promote_n: int = Field(default=3, ge=1, le=50)
+
+    # --- rolling occupancy grid (sonar inverse sensor model) ---
+    grid_cell_cm: float = Field(default=10.0, ge=2.0, le=50.0)
+    grid_size_cells: int = Field(default=41, ge=11, le=121)
+    grid_l_occ: float = 0.90
+    grid_l_free: float = -0.50
+    grid_l_clamp: float = 3.5
+    grid_occ_threshold: float = 0.85
+    grid_free_threshold: float = -0.40
+    grid_beta_free_deg: float = Field(default=28.0, ge=5.0, le=60.0)
+    grid_beta_occ_deg: float = Field(default=12.0, ge=2.0, le=40.0)
+    grid_alpha_cm: float = Field(default=12.0, ge=2.0, le=40.0)
+    grid_z_max_cm: float = Field(default=300.0, ge=50.0, le=500.0)
+
+    # --- VFH+ steering ---
+    vfh_fov_deg: float = Field(default=90.0, ge=30.0, le=180.0)
+    vfh_sector_deg: float = Field(default=12.0, ge=3.0, le=30.0)
+    vfh_a: float = 4.0
+    vfh_d_max_cm: float = Field(default=180.0, ge=40.0, le=400.0)
+    vfh_tau_low: float = 1.5
+    vfh_tau_high: float = 3.0
+    vfh_s_max_sectors: int = Field(default=6, ge=2, le=20)
+    vfh_robot_radius_cm: float = Field(default=12.0, ge=3.0, le=40.0)
+    vfh_safety_cm: float = Field(default=12.0, ge=0.0, le=40.0)
+    vfh_mu_target: float = 5.0
+    vfh_mu_current: float = 2.0
+    vfh_mu_previous: float = 2.0
+
+    # --- wall following ---
+    wall_setpoint_cm: float = Field(default=25.0, ge=8.0, le=80.0)
+    wall_kp: float = 2.0
+    wall_kd: float = 8.0
+    wall_deadband_cm: float = Field(default=3.0, ge=0.5, le=15.0)
+    wall_max_turn: float = Field(default=0.5, ge=0.1, le=1.0)
+    wall_base_linear: float = Field(default=0.18, ge=0.0, le=0.5)
+    wall_inside_corner_front_cm: float = Field(default=35.0, ge=10.0, le=120.0)
+    wall_outside_corner_jump_cm: float = Field(default=40.0, ge=10.0, le=150.0)
+
+    # --- topological place graph ---
+    topo_sonar_thresh: float = Field(default=0.6, ge=0.1, le=1.0)
+    topo_hist_thresh: float = Field(default=0.8, ge=0.1, le=1.0)
+    topo_min_votes: int = Field(default=2, ge=1, le=3)
+
+    # --- optical-flow stall confirmation ---
+    flow_move_thresh_px: float = Field(default=1.2, ge=0.1, le=20.0)
+    flow_min_tracks: int = Field(default=8, ge=3, le=100)
+    flow_stall_hysteresis: int = Field(default=3, ge=1, le=10)
+
+
 class PersonalityConfig(BaseModel):
     baseline_mood: str = "calm"
     curiosity: float = Field(default=0.55, ge=0.0, le=1.0)
@@ -224,6 +294,7 @@ class RoverConfig(BaseModel):
     vision: VisionConfig = Field(default_factory=VisionConfig)
     mind: MindConfig = Field(default_factory=MindConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
+    nav: NavConfig = Field(default_factory=NavConfig)
     life_loop: LifeLoopConfig = Field(default_factory=LifeLoopConfig)
 
     def public_summary(self) -> dict[str, Any]:

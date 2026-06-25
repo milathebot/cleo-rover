@@ -22,6 +22,8 @@ the ultrasonic/cliff/bumper reflexes, which stay authoritative on the Pi.
 from __future__ import annotations
 
 import importlib.util
+import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +49,162 @@ def vision_backends() -> dict[str, bool]:
         "numpy": _module_available("numpy"),
         "pillow": _module_available("PIL"),
     }
+
+
+def optical_flow_available() -> bool:
+    """Sparse optical flow needs OpenCV + numpy (the `vision` extra on a Pi)."""
+    b = vision_backends()
+    return b["opencv"] and b["numpy"]
+
+
+# --------------------------------------------------------------------------- #
+# Sparse optical flow: a cheap "am I actually moving?" / stall / yaw / looming
+# cue from the camera. The DECISION logic below is pure (plain lists of point
+# pairs) so it is fully unit-testable on a dev host; the OpenCV Lucas-Kanade
+# capture path is hardware-only. Flow is ADVISORY: it can confirm a stall (so Pip
+# stops trusting open-loop "I moved"), add a looming stop, and hint yaw -- it
+# never relaxes a reflex.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class FlowConfig:
+    move_thresh_px: float = 1.2  # median flow above this => moving (CALIBRATE on bench)
+    min_tracks: int = 8  # below this, flow is "unknown", not "stalled"
+    stall_hysteresis: int = 3  # consecutive stalled frames before a confirmed stall
+    ring_inner_px: float = 40.0  # divergence annulus (skip noisy focus-of-expansion)
+    ring_outer_px: float = 130.0
+    yaw_deadband_px: float = 0.8  # |mean dx| below this => not turning
+
+
+@dataclass(frozen=True)
+class FlowState:
+    moving: bool | None  # None => too few tracks to tell
+    stalled: bool  # commanded forward but image static (this frame)
+    median_flow_px: float
+    yaw_sign: int  # -1 right, 0 straight, +1 left (scene moves opposite the turn)
+    yaw_rate_proxy: float  # mean horizontal flow (uncalibrated)
+    ttc_frames: float | None  # crude time-to-collision from flow divergence
+    n_tracks: int
+    note: str
+
+
+def flow_motion_state(
+    prev_pts: list[tuple[float, float]],
+    cur_pts: list[tuple[float, float]],
+    *,
+    cmd_linear: float = 0.0,
+    img_w: int = 320,
+    img_h: int = 240,
+    cfg: FlowConfig | None = None,
+) -> FlowState:
+    """Reduce matched feature pairs to {moving?, stalled?, yaw, looming TTC}.
+
+    ``prev_pts``/``cur_pts`` are matched (x, y) feature locations in the previous
+    and current frame (same length). Pure: no OpenCV/numpy needed.
+    """
+    cfg = cfg or FlowConfig()
+    n = min(len(prev_pts), len(cur_pts))
+    if n < cfg.min_tracks:
+        return FlowState(
+            moving=None, stalled=False, median_flow_px=0.0, yaw_sign=0, yaw_rate_proxy=0.0,
+            ttc_frames=None, n_tracks=n, note="too few tracks; motion unknown",
+        )
+
+    flows = [(cur_pts[i][0] - prev_pts[i][0], cur_pts[i][1] - prev_pts[i][1]) for i in range(n)]
+    mags = sorted(math.hypot(dx, dy) for dx, dy in flows)
+    median = mags[len(mags) // 2]
+    mean_dx = sum(dx for dx, _ in flows) / n
+
+    moving = median > cfg.move_thresh_px
+    stalled = bool(cmd_linear > 0 and not moving)
+
+    # Yaw: a left (CCW) turn makes the scene shift RIGHT (mean_dx > 0).
+    if abs(mean_dx) <= cfg.yaw_deadband_px:
+        yaw_sign = 0
+    else:
+        yaw_sign = 1 if mean_dx > 0 else -1  # scene-right (dx>0) => turned left (+1)
+
+    # Looming: during forward translation the flow field diverges from the image
+    # centre (focus of expansion). TTC ~ 1 / divergence, measured over an annulus
+    # (the centre is too noisy). Only meaningful moving forward + roughly straight.
+    ttc = None
+    if moving and cmd_linear > 0 and yaw_sign == 0:
+        cx, cy = img_w / 2.0, img_h / 2.0
+        divs: list[float] = []
+        for (px, py), (dx, dy) in zip(prev_pts, flows):
+            rx, ry = px - cx, py - cy
+            rn = math.hypot(rx, ry)
+            if not (cfg.ring_inner_px < rn < cfg.ring_outer_px):
+                continue
+            radial = (dx * rx + dy * ry) / rn  # outward component
+            if radial > 0:
+                divs.append(radial / rn)
+        if len(divs) >= 4:
+            divs.sort()
+            med_div = divs[len(divs) // 2]
+            ttc = round(1.0 / med_div, 2) if med_div > 1e-3 else None
+
+    note = "stalled (commanded but static)" if stalled else ("moving" if moving else "static")
+    return FlowState(
+        moving=moving, stalled=stalled, median_flow_px=round(median, 2), yaw_sign=yaw_sign,
+        yaw_rate_proxy=round(mean_dx, 2), ttc_frames=ttc, n_tracks=n, note=note,
+    )
+
+
+class StallConfirmer:
+    """Hysteresis wrapper: only declare a confirmed stall after N consecutive
+    stalled frames, so a single noisy frame cannot trip a false stall."""
+
+    def __init__(self, cfg: FlowConfig | None = None) -> None:
+        self.cfg = cfg or FlowConfig()
+        self._run = 0
+
+    def update(self, state: FlowState) -> bool:
+        if state.stalled:
+            self._run += 1
+        else:
+            self._run = 0
+        return self._run >= self.cfg.stall_hysteresis
+
+    @property
+    def streak(self) -> int:
+        return self._run
+
+
+def capture_flow_state(  # pragma: no cover - needs OpenCV + a live camera
+    picam,
+    prev_gray,
+    *,
+    cmd_linear: float = 0.0,
+    cfg: FlowConfig | None = None,
+    max_corners: int = 80,
+):
+    """Grab a lores grayscale frame, run sparse Lucas-Kanade vs ``prev_gray``, and
+    return ``(FlowState, new_gray)``. Returns ``(None, prev_gray)`` if OpenCV is
+    unavailable or there is no previous frame yet. Hardware-only path.
+    """
+    if not optical_flow_available():
+        return None, prev_gray
+    import cv2  # type: ignore
+    import numpy as np  # type: ignore
+
+    yuv = picam.capture_array("lores")
+    h = yuv.shape[0] * 2 // 3
+    gray = yuv[:h, : yuv.shape[1]].copy()
+    if prev_gray is None:
+        return None, gray
+    feat = dict(maxCorners=max_corners, qualityLevel=0.2, minDistance=10, blockSize=7)
+    lk = dict(winSize=(15, 15), maxLevel=2, criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+    p0 = cv2.goodFeaturesToTrack(prev_gray, mask=None, **feat)
+    if p0 is None or len(p0) < (cfg or FlowConfig()).min_tracks:
+        return None, gray
+    p1, st, _ = cv2.calcOpticalFlowPyrLK(prev_gray, gray, p0, None, **lk)
+    good = st.flatten() == 1
+    prev_list = [tuple(map(float, pt)) for pt in p0[good].reshape(-1, 2)]
+    cur_list = [tuple(map(float, pt)) for pt in p1[good].reshape(-1, 2)]
+    state = flow_motion_state(prev_list, cur_list, cmd_linear=cmd_linear, img_w=gray.shape[1], img_h=gray.shape[0], cfg=cfg)
+    return state, gray
 
 
 def _tflite_available() -> bool:
