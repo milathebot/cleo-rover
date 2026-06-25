@@ -590,6 +590,25 @@ def health_degradation() -> dict:
     return {"ok": True, **current_degradation().as_dict()}
 
 
+@app.get("/life/diary")
+def life_diary() -> dict:
+    """A short, truthful first-person diary of Pip's inner life (mood, what it did,
+    what it has learned). Grounded entirely in real state -- nothing invented."""
+    from . import diary as diary_mod
+
+    reading = _last_battery if _last_battery is not None else update_battery(body.sensors())
+    entries = [e.model_dump() for e in store.recent_events(40)]
+    diary = diary_mod.compose_diary(
+        feelings=pip_feelings(),
+        recent_events=entries,
+        facts=store.list_facts(20),
+        place_count=len(TOPO.nodes),
+        battery_percent=getattr(reading, "soc_percent", None),
+        charging=bool(getattr(reading, "charging", False)),
+    )
+    return {"ok": True, **diary}
+
+
 @app.get("/tasks/history")
 def tasks_history(limit: int = 25) -> dict:
     """Recent task/behavior history (what Pip has been doing), newest first."""

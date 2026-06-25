@@ -248,6 +248,10 @@ GET  /calibration
 GET  /pip/rgb-affect
 POST /tasks/return-home
 GET  /health/composite
+GET  /health/degradation
+GET  /tasks/history
+POST /pip/live
+GET  /life/diary
 ```
 
 ### One-call status
