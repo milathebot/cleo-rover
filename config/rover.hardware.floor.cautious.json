@@ -64,11 +64,20 @@
     "default_drive_duration_ms": 300,
     "heartbeat_timeout_ms": 1500,
     "front_stop_distance_cm": 30,
+    "reflex_hard_cm": 30,
     "bench_safe_no_motors": false
   },
   "audio": {
     "mic": "usb",
     "speaker_amp": "max98357a-i2s"
+  },
+  "nav": {
+    "use_vfh_steering": false,
+    "mapping_enabled": false,
+    "wall_follow_enabled": false,
+    "flow_stall_enabled": false,
+    "topo_enabled": true,
+    "consolidation_enabled": true
   },
   "life_loop": {
     "enabled": true,

@@ -15,6 +15,7 @@ cleo-rover = "rover.client:main"
 cleo-rover-brain = "rover.brain:main"
 cleo-rover-calibrate = "rover.calibrate:main"
 cleo-rover-senses = "rover.senses:main"
+cleo-rover-voice = "rover.voice_daemon:main"
 cleo-rover-presence = "rover.presence:main"
 cleo-rover-vision-bridge = "rover.vision_bridge:main"
 cleo-rover-telegram-agent = "rover.telegram_agent:main"
@@ -32,6 +33,23 @@ pi = [
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
+]
+
+# Optional on-Pi camera perception. ARM/Pi-only wheels are guarded by markers so
+# `pip install .[vision]` is a no-op (except numpy) on dev hosts.
+vision = [
+    "numpy>=1.24",
+    "tflite-runtime>=2.14; platform_machine=='aarch64'",
+    "picamera2>=0.3; platform_machine=='aarch64'",
+    # Sparse optical flow (stall/looming confirmation). Headless build = no GUI deps.
+    "opencv-python-headless>=4.8; platform_machine=='aarch64'",
+]
+
+# Optional offline voice (wake word + STT). See rover/voice_daemon.py.
+voice = [
+    "numpy>=1.24",
+    "sounddevice>=0.4",
+    "openwakeword>=0.6; platform_machine=='aarch64'",
 ]
 
 [tool.setuptools]

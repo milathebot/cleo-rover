@@ -41,6 +41,65 @@ def should_reflex_stop(command: DriveCommand, sensors: dict[str, Any], *, thresh
     return False, None
 
 
+def should_panned_forward_stop(command: DriveCommand, pan_deg: Any, *, guard_deg: float = 5.0) -> tuple[bool, str | None]:
+    """Bearing guard: refuse forward motion while the turret sonar is panned away.
+
+    The forward ultrasonic reflex trusts the *live* range reading, but the single
+    sonar is turret-mounted. If the turret is panned to a side (e.g. mid-sweep)
+    and returns a clear *side* reading, that reading would otherwise satisfy the
+    reflex and let Pip drive forward into a wall the sonar is not pointed at. So
+    when driving forward, require the turret to be within +/- guard_deg of centre;
+    fail CLOSED if the pan angle is unknown.
+    """
+    if command.linear <= 0:
+        return False, None
+    try:
+        pan = abs(float(pan_deg))
+    except (TypeError, ValueError):
+        return True, "forward drive with unknown turret bearing; failing closed"
+    if pan > guard_deg:
+        return True, f"forward drive while turret panned {pan:.0f}deg (> {guard_deg:.0f}deg); sonar not looking ahead"
+    return False, None
+
+
+def should_cliff_stop(sensors: dict[str, Any], *, enabled: bool, drop_value: int) -> tuple[bool, str | None]:
+    """Floor-drop reflex from the downward IR line sensors.
+
+    Requires ALL line sensors to read the "no reflection / no floor" value, so a
+    single dark line under one sensor (line-following) is not mistaken for an
+    edge. Polarity is hardware-specific and configured via safety.line_drop_value;
+    disabled by default until verified on the robot.
+    """
+    if not enabled:
+        return False, None
+    line = sensors.get("line_sensors")
+    if not isinstance(line, dict) or not line:
+        return False, None
+    try:
+        all_drop = all(int(value) == int(drop_value) for value in line.values())
+    except (TypeError, ValueError):
+        return False, None
+    if all_drop:
+        return True, f"cliff/floor-drop reflex: all line sensors read no-floor ({drop_value})"
+    return False, None
+
+
+def should_bump_stop(sensors: dict[str, Any], *, enabled: bool) -> tuple[bool, str | None]:
+    """Contact reflex from the front bump switches (value 1 == pressed)."""
+    if not enabled:
+        return False, None
+    bumpers = sensors.get("bumpers")
+    if not isinstance(bumpers, dict) or not bumpers:
+        return False, None
+    try:
+        hit = [name for name, value in bumpers.items() if int(value) == 1]
+    except (TypeError, ValueError):
+        return False, None
+    if hit:
+        return True, f"bump reflex: bumper(s) {hit} triggered"
+    return False, None
+
+
 def display_spi_pins(bus: int, device: int, cs_pin: int | None = None) -> dict[str, int | None]:
     if bus == 1:
         chip_selects = {0: 18, 1: 17, 2: 16}
@@ -71,24 +130,118 @@ class RoverBody:
             self.hardware = FreenoveHardware(self.config)
         self.hardware_ready = mode == "hardware" and self.hardware is not None
         self.motors_armed = self.hardware_ready and not self.config.safety.bench_safe_no_motors
+        # Freshness cursor for event-based reflex consumption (see consume_reflex_stop).
+        self._last_reflex_consumed_at: float = 0.0
+        # Fail-closed counter: stop forward motion if the front range is unknown
+        # for several consecutive checks (tolerates single ultrasonic dropouts,
+        # which are common right after the turret moves, without a blind window).
+        self._consecutive_none_range: int = 0
+        self._max_none_range: int = 3
 
     def _reflex_threshold_cm(self) -> float:
-        return max(45.0, float(self.config.safety.front_stop_distance_cm))
+        # Configurable hard emergency floor instead of the old hardcoded max(45,...)
+        # that made doorway approach impossible. front_stop still acts as a lower bound.
+        return max(
+            float(self.config.safety.reflex_hard_cm),
+            float(self.config.safety.front_stop_distance_cm),
+        )
+
+    def consume_reflex_stop(self) -> dict[str, Any] | None:
+        """Return the latest reflex stop only if it is *new* since the last consume.
+
+        `state.last_reflex_stop` is retained telemetry (read by /sensors and the
+        brain). Navigation loops must react to a fresh reflex *event* exactly once;
+        previously they tested the truthy retained dict every cycle, so one real
+        reflex was re-counted forever and forced spurious recovery turns. This
+        consumes by timestamp: it hands back the reflex once, then stays quiet
+        until a newer reflex fires, without erasing the telemetry.
+        """
+        reflex = self.state.last_reflex_stop
+        if not reflex:
+            return None
+        stamp = float(reflex.get("time") or 0.0)
+        if stamp <= self._last_reflex_consumed_at:
+            return None
+        self._last_reflex_consumed_at = stamp
+        return reflex
 
     def _sensor_snapshot(self) -> dict[str, Any]:
         return FreenoveSensorReader(
             front_stop_distance_cm=self.config.safety.front_stop_distance_cm,
             adc_voltage_coefficient=self.config.sensors.adc_voltage_coefficient,
+            bumper_left_pin=self.config.sensors.bumper_left_pin,
+            bumper_right_pin=self.config.sensors.bumper_right_pin,
+            pcb_version=self.config.sensors.pcb_version,
         ).snapshot()
+
+    def front_distance_median(self, samples: int | None = None) -> float | None:
+        """Deliberate median range read for scans (noise-resistant). None in sim."""
+        if self.mode != "hardware":
+            return None
+        count = samples if samples is not None else int(getattr(self.config.odometry, "range_samples", 5))
+        return FreenoveSensorReader(
+            front_stop_distance_cm=self.config.safety.front_stop_distance_cm,
+            adc_voltage_coefficient=self.config.sensors.adc_voltage_coefficient,
+            pcb_version=self.config.sensors.pcb_version,
+        ).read_front_distance_cm(samples=count)
 
     async def _check_forward_reflex(self, command: DriveCommand, *, source: str) -> bool:
         if not self.hardware or not self.motors_armed or command.linear <= 0:
             return False
+        # Bearing guard FIRST: a forward pulse while the turret is panned away is a
+        # stop regardless of the (side-pointed) distance reading. This closes a
+        # real hole -- the reflex otherwise trusts a clear side reading as "ahead".
+        panned, panned_reason = should_panned_forward_stop(
+            command, self.state.turret.pan_deg, guard_deg=float(self.config.safety.forward_cone_guard_deg)
+        )
+        if panned:
+            self.state.last_reflex_stop = {
+                "reason": panned_reason,
+                "kind": "panned_forward",
+                "pan_deg": getattr(self.state.turret, "pan_deg", None),
+                "threshold_cm": self._reflex_threshold_cm(),
+                "drive": command.model_dump(),
+                "source": source,
+                "time": time.time(),
+            }
+            await self.stop()
+            return True
         sensors = self._sensor_snapshot()
+        # Fail CLOSED on an unknown forward range: should_reflex_stop returns
+        # (False, None) when distance is None, which would otherwise let a forward
+        # pulse run blind. Tolerate brief dropouts, then stop.
+        if sensors.get("front_distance_cm") is None:
+            self._consecutive_none_range += 1
+            if self._consecutive_none_range >= self._max_none_range:
+                self.state.last_reflex_stop = {
+                    "reason": f"front range unknown for {self._consecutive_none_range} consecutive checks; failing closed",
+                    "kind": "range_unknown",
+                    "front_distance_cm": None,
+                    "threshold_cm": self._reflex_threshold_cm(),
+                    "drive": command.model_dump(),
+                    "source": source,
+                    "time": time.time(),
+                }
+                await self.stop()
+                return True
+        else:
+            self._consecutive_none_range = 0
         reflex, reason = should_reflex_stop(command, sensors, threshold_cm=self._reflex_threshold_cm())
+        kind = "ultrasonic"
+        if not reflex:
+            cliff, cliff_reason = should_cliff_stop(
+                sensors, enabled=self.config.safety.cliff_reflex_enabled, drop_value=self.config.safety.line_drop_value
+            )
+            if cliff:
+                reflex, reason, kind = True, cliff_reason, "cliff"
+        if not reflex:
+            bump, bump_reason = should_bump_stop(sensors, enabled=self.config.safety.bumper_reflex_enabled)
+            if bump:
+                reflex, reason, kind = True, bump_reason, "bumper"
         if reflex:
             self.state.last_reflex_stop = {
                 "reason": reason,
+                "kind": kind,
                 "front_distance_cm": sensors.get("front_distance_cm"),
                 "threshold_cm": self._reflex_threshold_cm(),
                 "drive": command.model_dump(),
@@ -103,11 +256,21 @@ class RoverBody:
         if self._watchdog_task and not self._watchdog_task.done():
             return
 
+        slack_s = float(self.config.safety.motion_deadline_slack_ms) / 1000.0
+
         async def watchdog() -> None:
             while True:
                 await asyncio.sleep(0.03)
                 command = self.state.last_drive
-                if self.state.stopped or command is None or command.linear <= 0:
+                if self.state.stopped or command is None:
+                    continue
+                # Liveness backstop: if a drive should have ended (its pulse + slack)
+                # but the rover is still marked moving, force-stop. Catches a stalled
+                # or cancelled drive_monitor so motion can never run away.
+                if self.state.last_drive_at is not None and time.time() > self.state.last_drive_at + command.duration_ms / 1000.0 + slack_s:
+                    await self.stop()
+                    continue
+                if command.linear <= 0:
                     continue
                 await self._check_forward_reflex(command, source="persistent_watchdog")
 
@@ -186,6 +349,8 @@ class RoverBody:
             "front_stop_distance_cm": self.config.safety.front_stop_distance_cm,
             "line_sensors": None,
             "line_sensors_ready": False,
+            "bumpers": None,
+            "bumpers_ready": False,
             "ultrasonic_ready": False,
             "adc_channels": None,
             "adc_ready": False,
@@ -197,6 +362,9 @@ class RoverBody:
             live = FreenoveSensorReader(
                 front_stop_distance_cm=self.config.safety.front_stop_distance_cm,
                 adc_voltage_coefficient=self.config.sensors.adc_voltage_coefficient,
+                bumper_left_pin=self.config.sensors.bumper_left_pin,
+                bumper_right_pin=self.config.sensors.bumper_right_pin,
+                pcb_version=self.config.sensors.pcb_version,
             ).snapshot()
 
         return {
@@ -206,6 +374,8 @@ class RoverBody:
             "front_stop_distance_cm": self.config.safety.front_stop_distance_cm,
             "line_sensors": live.get("line_sensors"),
             "line_sensors_ready": live.get("line_sensors_ready", False),
+            "bumpers": live.get("bumpers"),
+            "bumpers_ready": live.get("bumpers_ready", False),
             "ultrasonic_ready": live.get("ultrasonic_ready", False),
             "adc_channels": live.get("adc_channels"),
             "adc_ready": live.get("adc_ready", False),

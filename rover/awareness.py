@@ -35,10 +35,17 @@ def _cpu_temp_c() -> float | None:
         return None
 
 
+def cpu_temp_c() -> float | None:
+    """Public CPU temperature (C) or None off-Pi. Used for thermal drive back-off."""
+    return _cpu_temp_c()
+
+
 def _load_average() -> list[float] | None:
+    # os.getloadavg() is Unix-only (raises AttributeError on Windows dev hosts);
+    # the Pi has it. Fail soft so the service/doctor work cross-platform.
     try:
         return [round(value, 2) for value in os.getloadavg()]
-    except OSError:
+    except (OSError, AttributeError):
         return None
 
 

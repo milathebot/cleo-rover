@@ -155,12 +155,13 @@ def choose_body_intent(snapshot: dict[str, Any], *, zone: str, last_intent: str 
 class BrainLoop:
     """PC-side brain loop. The Pi remains the body/reflex safety agent."""
 
-    def __init__(self, base: str, interval: float = 5.0, allow_movement: bool = False, supervised_body: bool = False, zone: str = "unknown") -> None:
+    def __init__(self, base: str, interval: float = 5.0, allow_movement: bool = False, supervised_body: bool = False, zone: str = "unknown", use_mind: bool = False) -> None:
         self.base = base
         self.interval = interval
         self.allow_movement = allow_movement
         self.supervised_body = supervised_body
         self.zone = zone
+        self.use_mind = use_mind
         self.running = True
         self.last_intent: str | None = None
 
@@ -168,6 +169,12 @@ class BrainLoop:
         self.running = False
 
     def once(self) -> dict[str, Any]:
+        if self.use_mind:
+            # Let the Pi run a full deliberative step (LLM mind -> Pi-validated
+            # intent -> dispatch, with deterministic fallback). Movement still
+            # requires a grant + armed motors on the Pi side.
+            result = request(self.base, "POST", f"/mind/step?zone={self.zone}", timeout=max(self.interval + 5.0, 35.0))
+            return {"ok": True, "mind_step": result}
         if self.supervised_body:
             snapshot = request(self.base, "GET", "/supervisor/status", timeout=8)
             intent = choose_body_intent(snapshot, zone=self.zone, last_intent=self.last_intent, last_scan=getattr(self, "last_scan", None))
@@ -197,7 +204,10 @@ class BrainLoop:
         while self.running:
             try:
                 result = self.once()
-                if self.supervised_body:
+                if self.use_mind:
+                    step = result.get("mind_step", {})
+                    print(json.dumps({"ok": True, "source": step.get("source"), "mind_used": step.get("mind_used"), "intent": (step.get("intent") or {}).get("intent"), "accepted": (step.get("result") or {}).get("accepted")}))
+                elif self.supervised_body:
                     print(json.dumps({
                         "ok": True,
                         "intent": result["intent"],
@@ -221,10 +231,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--allow-movement", action="store_true", help="Allow PC brain to request Pi-validated tiny movement")
     parser.add_argument("--supervised-body", action="store_true", help="Use Pi body-agent intent contract instead of legacy autonomy tick")
+    parser.add_argument("--use-mind", action="store_true", help="Drive via the LLM mind (Pi /mind/step): LLM intent -> Pi-validated -> dispatch, deterministic fallback")
     parser.add_argument("--zone", default="unknown")
     parser.add_argument("--once", action="store_true", help="Run one brain tick and exit")
     args = parser.parse_args(argv)
-    loop = BrainLoop(args.base, args.interval, args.allow_movement, args.supervised_body, args.zone)
+    loop = BrainLoop(args.base, args.interval, args.allow_movement, args.supervised_body, args.zone, use_mind=args.use_mind)
     if args.once:
         print(json.dumps(loop.once(), indent=2, sort_keys=True))
         return 0

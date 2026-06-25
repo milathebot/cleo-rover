@@ -1,3 +1,7 @@
+> ⚠️ **HISTORICAL session handoff.** Point-in-time notes from before the
+> embodied-agent overhaul; the doorway/hallway behavior described here has since been
+> rewritten and fixed. Current state: [`../handover.md`](../handover.md) + [`../README.md`](../README.md).
+
 # Pip Rover handover: hallway scout + adaptive movement
 
 Date: 2026-06-25

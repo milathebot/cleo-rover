@@ -62,48 +62,97 @@ class ADS7830:
 
 
 def estimate_battery_percent(voltage: float | None) -> float | None:
-    if voltage is None:
-        return None
-    # Conservative 2S Li-ion estimate for the Freenove 2x18650 pack.
-    low = 6.4
-    high = 8.4
-    return round(max(0.0, min(1.0, (voltage - low) / (high - low))) * 100, 1)
+    # Backed by the real 2S Li-ion resting curve now (see rover/battery.py), instead
+    # of the old linear 6.4-8.4V guess that misread the flat middle of the curve.
+    from .battery import voltage_to_soc
+
+    return voltage_to_soc(voltage)
 
 
 class FreenoveSensorReader:
-    def __init__(self, front_stop_distance_cm: float, adc_voltage_coefficient: float = 5.2) -> None:
+    def __init__(
+        self,
+        front_stop_distance_cm: float,
+        adc_voltage_coefficient: float = 5.2,
+        bumper_left_pin: int | None = None,
+        bumper_right_pin: int | None = None,
+        pcb_version: int = 2,
+    ) -> None:
+        from .battery import adc_pair
+
         self.front_stop_distance_cm = front_stop_distance_cm
-        self.adc_voltage_coefficient = adc_voltage_coefficient
+        self.pcb_version = pcb_version
+        # Bind the ADC (coeff, divider-multiplier) as a PCB-version pair so a v1
+        # board cannot be silently misread by ~33% (audit HIGH-2).
+        self.adc_voltage_coefficient, self.adc_multiplier = adc_pair(pcb_version)
+        self.bumper_left_pin = bumper_left_pin
+        self.bumper_right_pin = bumper_right_pin
 
     def read_line_sensors(self) -> dict[str, int] | None:
         DigitalInputDevice, _ = _import_gpiozero()
         pins = {"left": 14, "center": 15, "right": 23}
         devices = {}
         try:
-            # Pull-up matched the user's focused test; sensors are optional.
+            # The FNK0043 line module is an active push-pull LM393 comparator output
+            # (the vendor reads it with gpiozero.LineSensor, no internal pull). Forcing
+            # pull_up=True fought that driven output and biased a floating/disconnected
+            # channel to 1 -> false line/cliff (audit HIGH-3). Use no internal pull;
+            # active_state=True so value==1 means "over line / no-reflection".
+            devices = {name: DigitalInputDevice(pin, pull_up=None, active_state=True) for name, pin in pins.items()}
+            return {name: int(device.value) for name, device in devices.items()}
+        finally:
+            for device in devices.values():
+                device.close()
+
+    def read_bumpers(self) -> dict[str, int] | None:
+        pins = {name: pin for name, pin in (("left", self.bumper_left_pin), ("right", self.bumper_right_pin)) if pin is not None}
+        if not pins:
+            return None
+        DigitalInputDevice, _ = _import_gpiozero()
+        devices = {}
+        try:
             devices = {name: DigitalInputDevice(pin, pull_up=True) for name, pin in pins.items()}
             return {name: int(device.value) for name, device in devices.items()}
         finally:
             for device in devices.values():
                 device.close()
 
-    def read_front_distance_cm(self) -> float | None:
+    def read_front_distance_cm(self, samples: int = 1) -> float | None:
         # Keep one gpiozero DistanceSensor per service process. Creating/closing it
         # for every watchdog/sensors request can race with concurrent calls and leave
         # GPIO22/27 claimed, which disables the safety preflight exactly when we need it.
+        #
+        # samples>1 returns the MEDIAN of several quick reads to reject single-ping
+        # spikes/specular dropouts; used by deliberate scans where the noise causes
+        # false navigation turns. samples=1 keeps the fast path for the real-time
+        # reflex/watchdog, where a single close read SHOULD stop immediately
+        # (fail-closed) rather than wait for a median.
         global _DISTANCE_SENSOR
         _, DistanceSensor = _import_gpiozero()
+        count = max(1, int(samples))
         with _DISTANCE_SENSOR_LOCK:
             if _DISTANCE_SENSOR is None:
-                _DISTANCE_SENSOR = DistanceSensor(echo=22, trigger=27, max_distance=3.0)
+                # queue_len=1, partial=True: gpiozero's DistanceSensor otherwise
+                # background-polls and `.distance` returns a value smoothed over
+                # queue_len(=9) reads, so a tight median-of-N loop just re-reads the
+                # SAME averaged buffer (audit HIGH-4). queue_len=1 gives true single
+                # pings so the median and the fail-closed negative filter actually work.
+                _DISTANCE_SENSOR = DistanceSensor(echo=22, trigger=27, max_distance=3.0, queue_len=1, partial=True)
                 time.sleep(0.08)
-            distance_cm = round(float(_DISTANCE_SENSOR.distance) * 100, 1)
-            # HC-SR04/gpiozero can occasionally emit impossible negative values during
-            # echo timeout/noise, especially while the turret has just moved. Treat as
-            # unknown so planners fail closed instead of inventing a huge obstacle.
-            if distance_cm < 0:
-                return None
-            return distance_cm
+            readings: list[float] = []
+            for index in range(count):
+                value = round(float(_DISTANCE_SENSOR.distance) * 100, 1)
+                # HC-SR04/gpiozero can emit impossible negatives on echo timeout/noise,
+                # especially right after the turret moves. Drop them rather than invent
+                # a huge obstacle; planners treat a missing reading as fail-closed.
+                if value >= 0:
+                    readings.append(value)
+                if count > 1 and index < count - 1:
+                    time.sleep(0.012)
+        if not readings:
+            return None
+        readings.sort()
+        return readings[len(readings) // 2]
 
     def read_adc(self) -> dict[int, float]:
         adc = ADS7830(voltage_coefficient=self.adc_voltage_coefficient)
@@ -137,11 +186,22 @@ class FreenoveSensorReader:
         except Exception as exc:  # pragma: no cover - hardware-dependent
             out["errors"]["line_sensors"] = repr(exc)
         try:
+            bumpers = self.read_bumpers()
+            out["bumpers"] = bumpers
+            out["bumpers_ready"] = bumpers is not None
+        except Exception as exc:  # pragma: no cover - hardware-dependent
+            out["bumpers_ready"] = False
+            out["errors"]["bumpers"] = repr(exc)
+        try:
             adc = self.read_adc()
             out["adc_channels"] = {str(k): v for k, v in adc.items()}
             out["adc_ready"] = True
             # Freenove ADS7830 channel 2 is the board power sense in the vendor code.
-            battery_voltage = round(adc.get(2, 0.0) * 2, 2)
+            # Return None (not a fake 0.0V/0%) when the channel is missing, so a
+            # read glitch cannot masquerade as a critically low battery.
+            raw_power = adc.get(2)
+            # Apply the PCB-version-paired divider multiplier (x2 for v2, x3 for v1).
+            battery_voltage = round(raw_power * self.adc_multiplier, 2) if raw_power is not None else None
             out["battery_voltage"] = battery_voltage
             out["battery_percent"] = estimate_battery_percent(battery_voltage)
         except Exception as exc:  # pragma: no cover - hardware-dependent
@@ -157,6 +217,34 @@ def audio_devices() -> dict[str, Any]:
         return {"ok": result.returncode == 0, "returncode": result.returncode, "stdout": result.stdout[-4000:], "stderr": result.stderr[-1000:]}
 
     return {"playback": run(["aplay", "-l"]), "capture": run(["arecord", "-l"])}
+
+
+def capture_mic(seconds: float = 4.0, *, device: str | None = None, rate: int = 16000) -> dict[str, Any]:
+    """Record a short mono WAV from the USB mic via ALSA `arecord` (16kHz default).
+
+    Returns {ok, path, ...}. The USB mic is validated as working on ALSA; this is
+    the real capture the voice pipeline transcribes. No-op-safe if arecord absent.
+    """
+    if not shutil.which("arecord"):
+        return {"ok": False, "error": "arecord not found", "available": False}
+    seconds = max(1.0, min(15.0, float(seconds)))
+    path = Path(os.getenv("CLEO_ROVER_TTS_CACHE_DIR", "/tmp")) / f"cleo-rover-listen-{int(time.time() * 1000)}.wav"
+    cmd = ["arecord", "-q", "-f", "S16_LE", "-r", str(int(rate)), "-c", "1", "-d", str(int(round(seconds)))]
+    card = device or os.getenv("ALSA_CARD")
+    if card:
+        cmd += ["-D", f"plughw:{card},0"]
+    cmd.append(str(path))
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=seconds + 8, check=False)
+    ok = result.returncode == 0 and path.exists() and path.stat().st_size > 44  # > WAV header
+    return {
+        "ok": ok,
+        "available": True,
+        "path": str(path) if ok else None,
+        "seconds": seconds,
+        "rate": rate,
+        "returncode": result.returncode,
+        "stderr_tail": result.stderr[-400:],
+    }
 
 
 def play_tone(seconds: float = 0.35, hz: int = 880) -> dict[str, Any]:
@@ -440,6 +528,15 @@ class FreenoveRGBStrip:
                 bits.extend(self._encode_byte(byte))
         self.spi.xfer2(self._bits_to_bytes(bits) + [0] * 80)
 
+    def set_pixels(self, pixels: list[tuple[int, int, int]]) -> None:
+        """Set each LED independently (for directional / patterned expression)."""
+        bits: list[int] = []
+        for i in range(self.count):
+            r, g, b = pixels[i] if i < len(pixels) else (0, 0, 0)
+            for byte in self._ordered(r, g, b):
+                bits.extend(self._encode_byte(byte))
+        self.spi.xfer2(self._bits_to_bytes(bits) + [0] * 80)
+
     def close(self) -> None:
         self.spi.close()
 
@@ -451,6 +548,15 @@ def set_rgb(red: int, green: int, blue: int, brightness: int = FREENOVE_RGB_BRIG
     finally:
         strip.close()
     return {"ok": True, "count": count, "red": red, "green": green, "blue": blue, "brightness": brightness, "order": FREENOVE_RGB_ORDER}
+
+
+def set_rgb_pixels(pixels: list[tuple[int, int, int]], brightness: int = FREENOVE_RGB_BRIGHTNESS, count: int = FREENOVE_RGB_LED_COUNT) -> dict[str, Any]:
+    strip = FreenoveRGBStrip(count=count, brightness=brightness)
+    try:
+        strip.set_pixels(pixels)
+    finally:
+        strip.close()
+    return {"ok": True, "count": count, "pixels": len(pixels), "brightness": brightness, "order": FREENOVE_RGB_ORDER}
 
 
 def rgb_ready() -> bool:

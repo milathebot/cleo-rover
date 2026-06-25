@@ -162,6 +162,15 @@ def parse_rover_command(text: str) -> tuple[list[str] | None, str | None]:
     if cmd in SAFE_COMMANDS and len(parts) == 1:
         return SAFE_COMMANDS[cmd], None
 
+    if cmd == "say":
+        # Speech is safe and harmless, but the text is multi-word. Pass the whole
+        # remainder as a single argv element (not split tokens) so subprocess gets
+        # exactly one positional `text` and quoting/spaces survive intact.
+        spoken = text[len(cmd):].strip()
+        if not spoken:
+            return None, "Usage: /rover say <text to speak>"
+        return ["cleo-rover", "say", spoken], None
+
     if cmd in SAFE_PREFIX_COMMANDS:
         # Allow only CLI options/values, not shell execution. subprocess gets argv directly.
         return ["cleo-rover", cmd, *parts[1:]], None
@@ -208,6 +217,7 @@ def help_text() -> str:
         "  /rover pip-soul\n"
         "  /rover pip wake | sleep | quiet | social | assistant\n"
         "  /rover pip greet | observe | patrol | stop\n"
+        "  /rover say <text to speak>\n"
         "  /rover vision-label --zone office --speak --compact\n"
         "  /rover map-scan --zone office --angles=-25,0,25\n"
         "  /rover visual-map-scan --zone office --angles=-25,0,25\n"

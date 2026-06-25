@@ -1,3 +1,5 @@
+# Example unit for the PC/Pi-side autonomy brain loop. Adjust User= and the paths
+# to match wherever you run cleo-rover-brain (often a separate PC from the body).
 [Unit]
 Description=Cleo Rover PC-side autonomy brain
 After=network-online.target
@@ -5,8 +7,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/wiffl/projects/cleo-rover
-ExecStart=/home/wiffl/projects/cleo-rover/.venv/bin/cleo-rover-brain --base http://127.0.0.1:8099 --interval 5
+User=pi
+WorkingDirectory=/home/pi/cleo-rover
+ExecStart=/home/pi/cleo-rover/.venv/bin/cleo-rover-brain --base http://127.0.0.1:8099 --interval 5
 Restart=always
 RestartSec=3
 

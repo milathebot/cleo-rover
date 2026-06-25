@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ExpressionMode(str, Enum):
@@ -110,6 +110,10 @@ class VisionAnalysisCommand(BaseModel):
     zone: str = Field(default="unknown", max_length=80)
     snapshot_path: str | None = Field(default=None, max_length=240)
     source: str = Field(default="external_vision", max_length=40)
+    # Advisory navigation cues (None = unknown). Vision can add caution but never
+    # relaxes the ultrasonic/cliff/bumper reflexes.
+    clear_path: bool | None = None
+    hazards: list[str] = Field(default_factory=list, max_length=20)
 
 
 class MapScanCommand(BaseModel):
@@ -151,9 +155,30 @@ class HallwayScoutCommand(BaseModel):
     max_step_cm: float = Field(default=24.0, ge=2.0, le=90.0)
     stride_chunk_cm: float = Field(default=6.0, ge=1.0, le=16.0)
     clear_cm: float = Field(default=75.0, ge=35.0, le=220.0)
-    blocked_cm: float = Field(default=55.0, ge=30.0, le=140.0)
+    # blocked_cm is the top of the "too close to advance" band and the bottom of
+    # the creep band. Lowered from 55 to 42 so there is a real creep band
+    # (blocked_cm..clear_cm) for threading a doorway instead of a dead-zone.
+    blocked_cm: float = Field(default=42.0, ge=30.0, le=140.0)
+    # Below emergency_cm Pip stops + escapes immediately (independent of the
+    # driver's hard reflex floor). Ordered: emergency_cm < blocked_cm < clear_cm.
+    emergency_cm: float = Field(default=25.0, ge=10.0, le=60.0)
+    # An off-axis bearing must beat the centered clearance by this much before Pip
+    # turns to line up with it, so it does not abandon an open doorway ahead.
+    side_gain_cm: float = Field(default=25.0, ge=5.0, le=80.0)
+    # Hysteresis: consecutive fresh confirmations required before a recovery turn
+    # (blocked) or before declaring the doorway exited (clear).
+    confirm_blocked: int = Field(default=2, ge=1, le=6)
+    confirm_clear: int = Field(default=2, ge=1, le=6)
     # Avoid turret extremes that can clip Pip's shell; use ~85% of physical pan range.
     scan_angles: list[float] = Field(default_factory=lambda: [-60, -40, -20, 0, 20, 40, 60], max_length=9)
+
+    @model_validator(mode="after")
+    def _bands_ordered(self) -> "HallwayScoutCommand":
+        # Inverted/overlapping bands would let emergency subsume the creep band and
+        # make a doorway impossible to thread. Enforce emergency < blocked < clear.
+        if not (self.emergency_cm < self.blocked_cm < self.clear_cm):
+            raise ValueError(f"bands must satisfy emergency_cm < blocked_cm < clear_cm (got {self.emergency_cm}, {self.blocked_cm}, {self.clear_cm})")
+        return self
     pause_seconds: float = Field(default=1.0, ge=0.0, le=8.0)
     speak: bool = False
     compact: bool = True
@@ -174,6 +199,29 @@ class ReactiveExploreCommand(BaseModel):
     reverse_on_blocked: bool = True
     scan_angles: list[float] = Field(default_factory=lambda: [-70, -45, -20, 0, 20, 45, 70], max_length=9)
     keep_searching_when_stuck: bool = True
+    compact: bool = True
+    notes: str | None = Field(default=None, max_length=240)
+
+    @model_validator(mode="after")
+    def _bands_ordered(self) -> "ReactiveExploreCommand":
+        if not (self.front_emergency_cm < self.front_stop_cm < self.front_clear_cm):
+            raise ValueError(f"bands must satisfy front_emergency_cm < front_stop_cm < front_clear_cm (got {self.front_emergency_cm}, {self.front_stop_cm}, {self.front_clear_cm})")
+        return self
+
+
+class LineFollowCommand(BaseModel):
+    zone: str = Field(default="line", max_length=80)
+    allow_movement: bool = False
+    duration_seconds: int = Field(default=30, ge=1, le=300)
+    max_cycles: int = Field(default=40, ge=1, le=200)
+    base_linear: float = Field(default=0.22, ge=0.0, le=0.5)
+    kp: float = Field(default=0.45, ge=0.0, le=2.0)
+    kd: float = Field(default=0.15, ge=0.0, le=2.0)
+    # Digital value that means "this sensor is over the line". Verify on hardware.
+    line_on_value: int = Field(default=1, ge=0, le=1)
+    step_ms: int = Field(default=140, ge=60, le=400)
+    decision_pause_ms: int = Field(default=60, ge=10, le=300)
+    lost_stop_cycles: int = Field(default=6, ge=1, le=30)
     compact: bool = True
     notes: str | None = Field(default=None, max_length=240)
 
@@ -208,6 +256,20 @@ class FirstAdventureCommand(BaseModel):
     require_preflight: bool = True
     speak: bool = True
     compact: bool = True
+    notes: str | None = Field(default=None, max_length=240)
+
+
+class Goal(BaseModel):
+    """A persistent mission the LLM mind or owner sets; the local layer executes
+    it across arbiter ticks, so it survives the mind going offline."""
+
+    kind: str = Field(default="observe", pattern="^(explore_zone|find_person|return_to|observe)$")
+    target: str = Field(default="", max_length=80)
+    status: str = Field(default="active", pattern="^(active|done|abandoned)$")
+    step_budget: int = Field(default=12, ge=1, le=200)
+    progress: int = Field(default=0, ge=0)
+    created_at: float | None = None
+    expires_at: float | None = None
     notes: str | None = Field(default=None, max_length=240)
 
 

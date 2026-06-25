@@ -85,6 +85,13 @@ def validate_intent(command: BodyIntentCommand, *, status: dict[str, Any], senso
         if status.get("safety", {}).get("bench_safe_no_motors"):
             return False, "movement intent rejected: bench_safe_no_motors=true"
     if command.intent == "move_step":
+        # The single ultrasonic is turret-mounted; if the turret is panned, the
+        # "front" reading is the distance to a SIDE, not straight ahead. Refuse a
+        # forward step until it is recentered, so a panned turret can't certify a
+        # wall as clear (and the in-drive reflex points forward).
+        pan = (status.get("turret") or {}).get("pan_deg")
+        if pan is not None and abs(float(pan)) > 5.0:
+            return False, f"forward move rejected: turret panned {float(pan):.0f}deg; center it (look pan 0) so the forward range is read straight ahead"
         distance = sensors.get("front_distance_cm")
         # Conservative supervised autonomy: only allow forward steps when there
         # is real clearance. The reflex stop is a last line of defense, not the

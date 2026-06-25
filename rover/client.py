@@ -196,12 +196,26 @@ def main(argv: list[str] | None = None) -> int:
     hallway_scout.add_argument("--max-step-cm", type=float, default=24.0)
     hallway_scout.add_argument("--stride-chunk-cm", type=float, default=6.0, help="Max open-loop chunk inside an adaptive stride; sensors are checked between chunks")
     hallway_scout.add_argument("--clear-cm", type=float, default=75.0)
-    hallway_scout.add_argument("--blocked-cm", type=float, default=55.0)
+    hallway_scout.add_argument("--blocked-cm", type=float, default=42.0, help="Top of the 'too close to advance' band / bottom of the creep band")
+    hallway_scout.add_argument("--emergency-cm", type=float, default=25.0, help="Below this Pip stops and escapes immediately")
     hallway_scout.add_argument("--pause-seconds", type=float, default=1.0)
     hallway_scout.add_argument("--scan-angles", default="-60,-40,-20,0,20,40,60", help="Comma-separated turret pan angles; defaults avoid shell-clipping extremes")
     hallway_scout.add_argument("--speak", action="store_true")
     hallway_scout.add_argument("--verbose", action="store_true")
     hallway_scout.add_argument("--notes", default=None)
+
+    return_to = sub.add_parser("return-to")
+    return_to.add_argument("label", nargs="?", default="charger", help="Landmark label to head back toward, e.g. charger")
+    return_to.add_argument("--zone", default="office")
+    return_to.add_argument("--allow-movement", action="store_true")
+
+    line_follow = sub.add_parser("line-follow")
+    line_follow.add_argument("--zone", default="line")
+    line_follow.add_argument("--allow-movement", action="store_true")
+    line_follow.add_argument("--duration-seconds", type=int, default=30)
+    line_follow.add_argument("--max-cycles", type=int, default=40)
+    line_follow.add_argument("--base-linear", type=float, default=0.22)
+    line_follow.add_argument("--line-on-value", type=int, default=1)
 
     sub.add_parser("movement-status")
     sub.add_parser("movement-revoke")
@@ -269,6 +283,9 @@ def main(argv: list[str] | None = None) -> int:
     event.add_argument("--value", type=float, default=None)
 
     sub.add_parser("hear")
+    listen = sub.add_parser("listen")
+    listen.add_argument("--text", default=None, help="Route this transcript instead of capturing (external STT / testing)")
+    listen.add_argument("--seconds", type=float, default=4.0)
     sub.add_parser("snapshot")
     sub.add_parser("audio-devices")
     audio_tone = sub.add_parser("audio-tone")
@@ -437,6 +454,7 @@ def main(argv: list[str] | None = None) -> int:
                 "stride_chunk_cm": args.stride_chunk_cm,
                 "clear_cm": args.clear_cm,
                 "blocked_cm": args.blocked_cm,
+                "emergency_cm": args.emergency_cm,
                 "pause_seconds": args.pause_seconds,
                 "scan_angles": [float(x.strip()) for x in args.scan_angles.split(",") if x.strip()] if args.scan_angles else None,
                 "speak": args.speak,
@@ -449,6 +467,19 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "GET", "/autonomy/state")
     elif args.cmd == "tick":
         result = request(args.base, "POST", "/autonomy/tick", {"allow_movement": False, "inject_idle_tick": True})
+    elif args.cmd == "return-to":
+        path = f"/tasks/return-to?label={urllib.parse.quote(args.label)}&zone={urllib.parse.quote(args.zone)}&allow_movement={str(args.allow_movement).lower()}"
+        result = request(args.base, "POST", path, timeout=30.0)
+    elif args.cmd == "line-follow":
+        timeout = max(30.0, args.duration_seconds + 15.0)
+        result = request(args.base, "POST", "/tasks/line-follow", {
+            "zone": args.zone,
+            "allow_movement": args.allow_movement,
+            "duration_seconds": args.duration_seconds,
+            "max_cycles": args.max_cycles,
+            "base_linear": args.base_linear,
+            "line_on_value": args.line_on_value,
+        }, timeout=timeout)
     elif args.cmd == "movement-status":
         result = request(args.base, "GET", "/movement/status")
     elif args.cmd == "movement-revoke":
@@ -510,6 +541,11 @@ def main(argv: list[str] | None = None) -> int:
         result = request(args.base, "POST", "/events", {"kind": args.kind, "source": args.source, "label": args.label, "value": args.value})
     elif args.cmd == "hear":
         result = request(args.base, "POST", "/hearing/simulate")
+    elif args.cmd == "listen":
+        path = f"/hearing/listen?seconds={args.seconds}"
+        if args.text:
+            path += f"&text={urllib.parse.quote(args.text)}"
+        result = request(args.base, "POST", path, timeout=max(20.0, args.seconds + 70.0))
     elif args.cmd == "snapshot":
         result = request(args.base, "POST", "/vision/snapshot")
     elif args.cmd == "audio-devices":

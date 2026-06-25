@@ -42,6 +42,17 @@ CREATE TABLE IF NOT EXISTS spatial_memory (
   observations INTEGER NOT NULL,
   payload_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS semantic_facts (
+  subject TEXT NOT NULL,
+  predicate TEXT NOT NULL,
+  object TEXT NOT NULL,
+  detail TEXT,
+  confidence REAL NOT NULL,
+  observations INTEGER NOT NULL,
+  first_seen_at REAL,
+  last_seen_at REAL,
+  PRIMARY KEY (subject, predicate, object)
+);
 """
 
 
@@ -102,12 +113,20 @@ class RoverStore:
             )
         return event
 
-    def recent_events(self, limit: int = 25, since: float | None = None) -> list[RoverEvent]:
+    def recent_events(self, limit: int = 25, since: float | None = None, kind: str | None = None) -> list[RoverEvent]:
         sql = "SELECT * FROM events"
+        clauses: list[str] = []
         params: list[Any] = []
         if since is not None:
-            sql += " WHERE timestamp >= ?"
+            clauses.append("timestamp >= ?")
             params.append(since)
+        if kind is not None:
+            # Kind-filtered lookup lets the brain find the latest vision_analysis
+            # even when hundreds of per-angle scan events flood the recent window.
+            clauses.append("kind = ?")
+            params.append(kind)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY timestamp DESC LIMIT ?"
         params.append(max(1, min(limit, 500)))
         with self.connect() as con:
@@ -144,6 +163,32 @@ class RoverStore:
             id=row["id"], label=row["label"], kind=row["kind"], zone=row["zone"], bearing_deg=row["bearing_deg"], distance_m=row["distance_m"],
             confidence=row["confidence"], notes=row["notes"], first_seen_at=row["first_seen_at"], last_seen_at=row["last_seen_at"], observations=row["observations"], payload=json.loads(row["payload_json"]),
         ) for row in rows]
+
+    def save_facts(self, facts: list[dict[str, Any]]) -> int:
+        """Replace the semantic-facts table with the consolidated set."""
+        with self.connect() as con:
+            con.execute("DELETE FROM semantic_facts")
+            con.executemany(
+                """INSERT OR REPLACE INTO semantic_facts
+                (subject,predicate,object,detail,confidence,observations,first_seen_at,last_seen_at)
+                VALUES(?,?,?,?,?,?,?,?)""",
+                [
+                    (
+                        f["subject"], f["predicate"], f["object"], f.get("detail", ""),
+                        float(f.get("confidence", 0.5)), int(f.get("observations", 1)),
+                        f.get("first_seen_at"), f.get("last_seen_at"),
+                    )
+                    for f in facts
+                ],
+            )
+        return len(facts)
+
+    def list_facts(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows = con.execute(
+                "SELECT * FROM semantic_facts ORDER BY confidence DESC LIMIT ?", (max(1, min(limit, 1000)),)
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def prune_events(self, *, keep_days: int = 30, dry_run: bool = False) -> dict[str, Any]:
         cutoff = time.time() - max(1, keep_days) * 86400

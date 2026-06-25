@@ -85,7 +85,9 @@ class AutonomyEngine:
         elif event.kind == RoverEventKind.idle_tick:
             self.state.attention = max(0.0, self.state.attention - 0.02)
             self.state.curiosity = max(0.0, self.state.curiosity - 0.01)
-            if self.state.mood not in {"charging", "disconnected", "manual"}:
+            # Do not erase persistent/low-energy moods (an idle tick right after a
+            # low-battery event must not reset 'tired' back to 'calm').
+            if self.state.mood not in {"charging", "disconnected", "manual", "tired", "low_power"} and self.state.energy >= 0.22:
                 self.state.mood = "calm"
 
     def decide(self, *, recent_events: list[RoverEvent], body_status: dict[str, Any] | None = None, allow_movement: bool = False, now: float | None = None) -> BehaviorDecision:
