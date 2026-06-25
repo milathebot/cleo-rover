@@ -13,7 +13,7 @@ later, it slots in as just another range source for the same grid + VFH.
 **Everything here is ADVISORY.** It decides *where/how* to move; it can only ever
 make Pip do **less**. The Pi-local reflex/cliff/bumper stops, movement grants, and
 `validate_intent` remain authoritative and untouched. All logic is verified in sim
-+ unit tests (`python -m pytest -q`, 254 passing). Behaviour-changing flags ship
++ unit tests (`python -m pytest -q`, 365 passing as of the latest pass). Behaviour-changing flags ship
 **OFF** so the branch merges dark; you enable them after light supervised testing.
 
 > Golden rules (unchanged): Pi-local safety is authoritative; nothing (nav, vision,

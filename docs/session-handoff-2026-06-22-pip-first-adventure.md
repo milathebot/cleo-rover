@@ -1,3 +1,6 @@
+> ⚠️ **HISTORICAL session handoff** (2026-06-22, pre-overhaul). Superseded by the
+> current system — see [`../handover.md`](../handover.md) + [`../README.md`](../README.md).
+
 # Pip first-adventure handoff — 2026-06-22
 
 ## Status

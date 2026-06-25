@@ -1,3 +1,11 @@
+> ⚠️ **HISTORICAL (superseded).** This is the *pre-overhaul* audit that motivated the
+> embodied-agent rebuild. **Every issue it raises has since been fixed** — stale
+> reflex handling, raw-front-vs-scan-center, doorway hysteresis/state, `latest_vision:
+> null`, and brain-not-in-the-loop are all resolved. Do **not** treat the
+> "suspected issues / questions to audit" below as current. For the current system,
+> read **[`handover.md`](handover.md)** (operating manual) and [`README.md`](README.md).
+> Kept here only as a record of the original problem statement.
+
 # Agent audit handover: Pip hallway scout and brain connectivity
 
 Date: 2026-06-25

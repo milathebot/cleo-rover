@@ -1,3 +1,9 @@
+> ⚠️ **HISTORICAL (as-was audit).** This documents the *original* broken state and
+> the plan that motivated the rebuild — the "STUBBED / DISCONNECTED" architecture
+> and defects D1–D23 below are what was fixed, not the current system. Phases 0–9 +
+> Tier 1/2/3 are all implemented. For the current state read [`../handover.md`](../handover.md)
+> (operating manual) and [`../README.md`](../README.md). Kept for design rationale + lineage.
+
 # Pip (cleo-rover) — Decision-Grade Audit & Path to an Embodied AI Agent
 
 **Author:** Lead robotics architect (synthesis of 5 subsystem audits + 5 research briefs)

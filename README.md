@@ -4,16 +4,19 @@ Body-control service for Cleo Rover Mk1.
 
 The Raspberry Pi 4B is the current body controller for the stock Freenove chassis. Hermes/Cleo on the PC is the brain.
 
-## Current audit handover
+## Operating Pip
 
-Before changing hallway/autonomy code, read [`agent.md`](agent.md). It is the repo-audit handover for Codex/Claude agents and summarizes the latest real Pip hallway-scout run, suspected doorway-navigation issues, and open questions around safer brain/Hermes connectivity.
+If you are the agent/operator running Pip, **start with [`handover.md`](handover.md)** —
+the canonical operating manual: the architecture, the mind intent contract +
+refusal rules, the movement/grant + safety model, the bring-up calibration, and
+the day-to-day API. [`agent.md`](agent.md) is the **historical** pre-overhaul audit
+kept for context; the doorway/vision/brain issues it raised have all been fixed
+(see the upgrade notes below).
 
-Latest physical focus:
-
-- Pip is running supervised `hallway-scout` missions from `office-doorway`.
-- Pi-local safety remains authoritative: movement grants, short bounded chunks, scan-before-move, stop after chunks, and ultrasonic reflex stop.
-- Current suspected issues to audit before patching are stale `last_reflex_stop` handling, raw front readings overriding fresh scan-center data, missing doorway state/hysteresis, and live vision not reaching `pip-brain` as actionable context.
-- Hermes/Cleo should provide high-level perception/planning only; the Pi must validate/refuse every movement intent locally.
+Pi-local safety stays authoritative throughout: movement grants, armed motors,
+bounded chunks, scan-before-move, the ultrasonic/cliff/bumper reflex, and a turret
+bearing guard. Hermes/Cleo provides high-level intent only; the Pi validates and
+may refuse every movement intent locally.
 
 ## Autonomous embodied-agent upgrade (2026-06-25)
 
@@ -93,7 +96,7 @@ Endpoints (all sim-safe; movement still gated): `/nav/plan`, `/nav/grid`,
 [`docs/HANDOVER_2026-06-25_PIP_TIER3_NAV_MAPPING.md`](docs/HANDOVER_2026-06-25_PIP_TIER3_NAV_MAPPING.md).
 
 Everything is verifiable now in simulator + unit tests (`python -m pytest -q`,
-254 passing). Only physical *calibration + deliberate enablement* is left for
+365 passing). Only physical *calibration + deliberate enablement* is left for
 supervised hardware runs — odometry coefficients (UMBmark), vision FPS/threshold,
 USB-mic levels/wake-word, verifying IR/bumper polarity before enabling the cliff/
 bumper reflexes, and turning on the arbiter. None are on the safety-critical path
@@ -102,41 +105,44 @@ bumper reflexes, and turning on the arbiter. None are on the safety-critical pat
 
 ## What works on the current Pi 4B rover
 
-This repo runs in safe simulator and hardware-presence modes:
+Runs fully in simulator + hardware-presence, and (after the bring-up calibration)
+motor-armed modes. Implemented and tested (365 tests):
 
-- health/status API
-- drive commands with automatic timeout safety
-- stop command
-- expression state for the 2-inch Waveshare ST7789 screen
-- hardware SPI display driver for the Waveshare 2-inch 240×320 ST7789V LCD
-- PNG expression renderer for the Waveshare 2-inch screen
-- PC-side operator CLI
-- persistent SQLite autonomy state, events, cooldowns, and spatial memory
-- personality/life-loop config for curiosity, attention-seeking, quiet hours, and behavior cooldowns
-- Cleo Hub awareness for focus/quiet-mode context
-- browser autonomy dashboard at `/autonomy/dashboard`
-- safety simulator for obstacle, bump, low-battery, and disconnect scenarios
-- arrival-day calibration wizard scaffold
-- senses daemon stub for future mic/camera event streaming
-- systemd unit templates for Pi body, Pi senses, and PC brain services
-- PC-side `cleo-rover-brain` autonomy loop
-- event model for sound/speech/wake/motion/bump/battery/network stimuli
-- autonomy state engine: mood, attention, curiosity, energy, confidence
-- safe behavior decisions for wake response, sound reaction, safety stop, curiosity scan, charge request, idle presence
-- hearing and vision simulation hooks for pre-hardware testing
-- camera/speaker/mic placeholders
-- config-driven hardware map and safety limits
-- custom Cleo-native Freenove FNK0043 motor/servo map derived from the vendor codebase
-- `/config` endpoint for pin/driver readiness
-- smoke tests
+- **Safety floor (authoritative):** 30ms watchdog + 20ms drive-monitor + ultrasonic
+  reflex + turret **bearing guard** + cliff/bumper reflexes (default-off) + movement
+  grants + bounded motion budget + battery cutoff.
+- **Navigation:** doorway/hallway navigator, reactive explore, line-follow, and the
+  Tier-3 body-frame stack — rolling occupancy grid, VFH+ steering, wall-following,
+  topological place-graph, frontier exploration, and continuous "cruise" motion.
+- **Self-direction:** a behavior arbiter that picks what to do from mood/energy/
+  curiosity/battery/people/time; goals the LLM mind can set; person/pet social
+  reactions; quiet-hours obedience; thermal back-off; stuck-escalation.
+- **Self-preservation:** honest sag-aware battery SOC → traverses the place-graph to
+  the charger and docks when low; asks for help when it can't.
+- **Perception:** on-Pi vision (TFLite) + optical-flow stall/looming → real
+  `vision_analysis` events; advisory only, never relaxes a reflex.
+- **Voice:** offline wake-word → STT → `/pip/command` (talking never moves the robot).
+- **Memory:** SQLite events, decaying spatial memory, a topological graph, and
+  consolidated semantic facts; survives reboots.
+- **Expression (no display yet):** RGB-as-face affect + a truthful inner-life diary.
+- **Observability:** one-call `GET /health/composite`, graceful-degradation tiers, a
+  browser operator panel at `/`, and a bring-up `GET /calibration`.
+- **Pluggable LLM mind:** `rover/mind.py` asks an OpenAI-compatible endpoint for one
+  bounded, Pi-validated intent; the deterministic local policy is the default + fallback.
+- Persistent SQLite state; personality/life-loop config; Cleo Hub awareness; the
+  safety simulator; systemd unit templates; the PC-side `cleo-rover-brain` loop; a
+  Cleo-native Freenove FNK0043 motor/servo map; `/config`; smoke tests.
+
+The Waveshare ST7789 display driver/renderer exist in code, but the owner does not
+own a display yet, so **RGB + voice are the live expression channels**.
 
 ## Run locally
 
 ```bash
-cd /home/wiffl/cleo-rover
+cd ~/cleo-rover
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -e .[dev]
+pip install -e '.[dev]'        # on the Pi use '.[pi]' (+ optional '.[vision]'/'.[voice]')
 uvicorn rover.service:app --host 127.0.0.1 --port 8099
 ```
 
@@ -264,6 +270,10 @@ nav/place state, RGB affect, and the build/soul version, with a top-level
 
 ## Autonomy phases implemented
 
+> **Note:** these early phases (A–F) document the original autonomy scaffold. They
+> are all now superseded by the full implementation described above — voice, vision,
+> mapping, and the LLM mind are real (not stubs). Kept here for lineage.
+
 ### Phase A: event model
 
 The rover can now receive and retain recent stimulus events:
@@ -308,15 +318,21 @@ Implemented behaviors:
 
 ### Phase D: voice/hearing hooks
 
-`/hearing/simulate` creates sound/speech/wake events now. Real mic/audio routing will replace this after the USB mic is validated.
+`/hearing/simulate` creates synthetic events for testing; the **real** offline
+voice path (wake-word → STT → `/pip/command`, via `rover/voice_daemon.py` and
+`/hearing/listen`) is now implemented.
 
 ### Phase E: vision hooks
 
-`/vision/snapshot` creates camera/motion events and returns an analysis stub. Real camera frames will route to Hermes/vision later.
+`/vision/snapshot` creates camera/motion events; **real** on-Pi vision
+(`rover/vision_service.py`, TFLite + optical flow) now emits `vision_analysis`
+events into the loop, with external/Hermes vision also supported via `/vision/analysis`.
 
 ### Spatial memory / mapping scaffold
 
-Mk1 cannot do true SLAM before the camera, IMU, and motor odometry are wired, but it can now remember named landmarks and places:
+There are still no encoders/IMU/LiDAR (distances are open-loop guesses), but Pip now
+has a real body-frame mapping/nav stack (rolling occupancy grid + a topological
+place-graph + consolidated facts) on top of the named-landmark memory:
 
 ```bash
 curl -X POST http://127.0.0.1:8099/map/remember \
@@ -381,17 +397,23 @@ The default max duty cycle is conservative at `0.35`, and real motor output stay
 
 ## Safe setup checklist
 
-For a fresh Pi or after pulling new code:
+For a fresh Pi or after pulling new code (the full, ordered bring-up + calibration
+is in [`docs/HANDOVER_2026-06-25_PIP_FNK0043_AUDIT_AND_BRINGUP.md`](docs/HANDOVER_2026-06-25_PIP_FNK0043_AUDIT_AND_BRINGUP.md);
+`GET /calibration` returns the same checklist + a `ready_for_supervised_drive` gate):
 
 1. Boot Raspberry Pi OS Lite on the Pi 4B and verify SSH.
-2. Enable I2C, SPI, camera interfaces, and SPI1 for the display with `sudo scripts/enable_spi1_display.sh` then reboot.
-3. Install/update the repo in `/home/cleo/cleo-rover` and run `pip install -e '.[pi]'` inside the project venv.
+2. Enable I2C, SPI, camera interfaces (the ST7789 SPI1 step only if a display is wired).
+3. Install/update the repo and run `pip install -e '.[pi]'` inside the project venv
+   (add `'.[vision]'` / `'.[voice]'` for the camera/voice extras).
 4. Install the main service with `sudo scripts/install_systemd.sh`.
-5. Verify the display safely with `cleo-rover display-test` after the ST7789 display is wired.
-6. Optionally install Pip's observation-first life loop with `sudo scripts/install_pip_life_systemd.sh`.
-7. Verify `/health`, `/status`, `/config`, `/sensors`, `/preflight`, and `/vision/snapshot` before any floor movement.
+5. `i2cdetect -y 1` → confirm `0x40` (PCA9685) and `0x48` (ADS7830); **set
+   `sensors.pcb_version` (1 or 2)** for your board — a wrong value misreads the battery ~33%.
+6. `GET /calibration` and complete the checklist: verify pan goes **right** on +pan,
+   set IR polarity (`safety.line_drop_value`), measure coast distance, calibrate odometry.
+7. Verify `/health/composite`, `/status`, `/config`, `/sensors`, `/preflight` before any floor movement.
 8. Install the Telegram agent and profile-switch sudoers helper only after local service checks pass.
-9. Use floor-cautious mode only for deliberate floor tests with a clear area and an active movement arm.
+9. Enable reflexes/motion flags **last**, and use floor-cautious mode only for deliberate
+   floor tests with a clear area and an armed, supervised movement grant.
 
 ## Hybrid body/brain control
 

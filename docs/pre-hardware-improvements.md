@@ -1,3 +1,6 @@
+> ⚠️ **HISTORICAL session handoff** (pre-overhaul). Superseded by the current
+> system — see [`../handover.md`](../handover.md) + [`../README.md`](../README.md).
+
 # Cleo Rover Mk1 pre-hardware hardening
 
 Implemented before parts arrive:

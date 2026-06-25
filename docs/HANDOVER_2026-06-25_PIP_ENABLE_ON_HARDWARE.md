@@ -2,7 +2,7 @@
 
 This is the supervised checklist for the agent/operator who runs Pip on the Pi
 after merging the `feat/autonomous-embodied-agent` branch. Everything in the
-branch is verified in simulator + unit tests (`python -m pytest -q`, 191 passing).
+branch is verified in simulator + unit tests (`python -m pytest -q`, 365 passing as of the latest pass).
 What remains is **physical calibration and deliberate enablement** — none of it is
 on the safety-critical path (the reflex floor and `validate_intent` are proven in
 sim first), but several steps **must be done supervised, in this order**.
@@ -142,7 +142,7 @@ Only after 1–7 pass on the floor:
 ## Verification sequence (every code pull)
 
 ```bash
-python -m pytest -q                                  # 191 passing
+python -m pytest -q                                  # 365 passing
 CLEO_ROVER_MODE=sim uvicorn rover.service:app --port 8099 &
 python scripts/smoke_test.py                         # drive-timeout safety, sensors
 cleo-rover preflight --mode floor-cautious           # only on the floor, area clear

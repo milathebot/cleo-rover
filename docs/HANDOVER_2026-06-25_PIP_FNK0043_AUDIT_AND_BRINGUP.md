@@ -6,7 +6,8 @@ Freenove's own source as ground truth). It found real bugs â€” all fixed below â
 then three autonomy features were built on the verified facts. No display is
 owned yet, so **RGB is Pip's expression channel**.
 
-All changes are default-safe and sim-tested (`python -m pytest -q`, **316 passing**).
+All changes are default-safe and sim-tested (`python -m pytest -q`, **365 passing** as of
+the latest pass). The canonical operating manual is [`handover.md`](../handover.md).
 
 ---
 
