@@ -16,7 +16,7 @@ from .drivers import RoverBody
 from .hermes_bridge import ask_hermes_as_pip, hermes_configured
 from .hub import fetch_hub_snapshot
 from .mapping import map_summary, observation_items, scan_item, semantic_events_from_analysis
-from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
+from .models import AutonomyTickCommand, BehaviorDecision, BodyIntentCommand, DriveCommand, ExpressionCommand, ExpressionMode, FirstAdventureCommand, HallwayScoutCommand, LittleBeingLoopCommand, MapFloorTaskCommand, MapScanCommand, MoveStepCommand, MovementPermissionCommand, PipCommand, PipLifeTickCommand, PipModeCommand, ReactiveExploreCommand, RGBCommand, RotateStepCommand, RoverEvent, RoverEventKind, RoverStatus, SpatialMemoryItem, TurretCommand, VisionAnalysisCommand, VisionAwarenessCommand, VisualMapScanCommand
 from .peripherals import audio_devices, camera_tool, capture_camera_snapshot, play_tone, speak_text
 from .pip_brain import build_pip_brain
 from .pip_soul import PIP_SOUL_VERSION, pip_soul_public
@@ -698,6 +698,38 @@ async def reactive_turn_toward(best: dict | None, *, blocked_streak: int = 0) ->
     if abs(deg) < 1.0:
         return {"ok": True, "skipped": True, "reason": "best bearing already centered", "deg": deg}
     return await rotate_step(RotateStepCommand(deg=deg, require_permission=True))
+
+
+async def hallway_scout_scan_turn(zone: str, angles: list[float], *, reason: str) -> dict:
+    scan, summary = await reactive_escape_scan(zone, angles)
+    best = summary.get("best")
+    center = summary.get("center")
+    if not best:
+        turn = await rotate_step(RotateStepCommand(deg=15, require_permission=True))
+        return {"kind": "scan-turn", "reason": reason, "summary": summary, "turn": turn, "fallback": "no scan best; small right search"}
+
+    best_bearing = float(best.get("bearing_deg") or 0.0)
+    best_distance = float(best.get("distance_cm") or 0.0)
+    center_distance = float(center.get("distance_cm") or 0.0) if center else None
+    if abs(best_bearing) < 8.0:
+        # If the clearest return is centered but still blocked, search right first to avoid sitting at a doorframe.
+        deg = 15.0
+    else:
+        # Convert scan bearing to a bounded open-loop rotate. Keep it small and re-scan often.
+        deg = max(-25.0, min(25.0, best_bearing * 0.45))
+        if abs(deg) < 12.0:
+            deg = 12.0 if deg >= 0 else -12.0
+    turn = await rotate_step(RotateStepCommand(deg=deg, require_permission=True))
+    return {
+        "kind": "scan-turn",
+        "reason": reason,
+        "summary": summary,
+        "best_bearing_deg": best_bearing,
+        "best_distance_cm": best_distance,
+        "center_distance_cm": center_distance,
+        "turn_deg": deg,
+        "turn": turn,
+    }
 
 
 def battery_safety_summary(sensors: dict) -> dict:
@@ -1491,6 +1523,98 @@ async def first_adventure_task(command: FirstAdventureCommand) -> dict:
     if not command.compact:
         response["actions"] = actions
     return response
+
+
+@app.post("/tasks/hallway-scout")
+async def hallway_scout_task(command: HallwayScoutCommand) -> dict:
+    """Fast supervised doorway/hallway scout.
+
+    This is intentionally Pi-local and sensor-first: short proven movement pulses,
+    stop after every action, quick ultrasonic checks every cycle, and camera/Hermes
+    vision only every N cycles for slower semantic context. If front range blocks,
+    it scans and turns toward the best clearance instead of repeatedly trying forward.
+    """
+    global movement_grant
+    await body.stop()
+    preflight_now = preflight("floor-cautious")
+    actions: list[dict] = [{"kind": "safe-stop"}, {"kind": "preflight", "ok": preflight_now.get("ok")}]
+    if not command.allow_movement:
+        observe = await vision_awareness_task(VisionAwarenessCommand(zone=command.zone, capture=True, scan=True, angles=[-60, -30, 0, 30, 60], compact=True, notes="hallway scout observe-only"))
+        return {"ok": True, "started_movement": False, "preflight": preflight_now, "actions": actions + [{"kind": "observe-only", "result": {"capture": observe.get("capture"), "scan_summary": observe.get("scan_summary")}}]}
+    if not preflight_now.get("ok"):
+        await body.stop()
+        return {"ok": False, "started_movement": False, "reason": "preflight failed", "preflight": preflight_now, "actions": actions}
+
+    grant = MovementPermissionCommand(
+        task=f"hallway-scout:{command.zone}",
+        allow_movement=True,
+        duration_seconds=max(20, command.cycles * 8),
+        max_linear=0.40,
+        max_turn=0.75,
+        notes=command.notes or "supervised fast hallway scout",
+    )
+    movement_grant = grant.model_dump() | {"expires_at": time.time() + grant.duration_seconds, "active": True}
+    event = store.add_event(RoverEvent(kind=RoverEventKind.movement_permission, source="hallway_scout", label=grant.task, payload=movement_grant | {"zone": command.zone}))
+    events.add(event)
+    await pip_set_expression(ExpressionMode.seeking, "scout", 0.55)
+    if command.speak:
+        actions.append({"kind": "speech", "result": speak_text("I will scout in tiny steps and stop if the path is close.")})
+
+    blocked_streak = 0
+    for cycle in range(1, command.cycles + 1):
+        sensors_now = body.sensors()
+        front = sensors_now.get("front_distance_cm")
+        front_value = float(front) if front is not None else None
+        if command.vision_every and (cycle == 1 or cycle % command.vision_every == 0):
+            vision = await vision_awareness_task(VisionAwarenessCommand(zone=command.zone, capture=True, scan=False, compact=True, notes=f"hallway scout cycle {cycle}"))
+            latest = (vision.get("placeholder_analysis") or {}) if isinstance(vision, dict) else {}
+            actions.append({"kind": "vision", "cycle": cycle, "front_distance_cm": front_value, "capture": vision.get("capture"), "latest_placeholder": latest})
+
+        if front_value is None:
+            blocked_streak += 1
+            action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason="front range unknown")
+        elif front_value < command.blocked_cm:
+            blocked_streak += 1
+            await body.stop()
+            action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"front blocked {front_value:.1f}cm")
+        elif front_value < command.clear_cm:
+            blocked_streak += 1
+            action = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason=f"front cautious {front_value:.1f}cm")
+        else:
+            blocked_streak = 0
+            move = await move_step(MoveStepCommand(forward_cm=command.step_cm, require_permission=True))
+            action = {"kind": "move-step", "result": move}
+
+        action["cycle"] = cycle
+        action["front_distance_cm"] = front_value
+        actions.append(action)
+        await asyncio.sleep(command.pause_seconds)
+        await body.stop()
+        if body.state.last_reflex_stop:
+            actions.append({"kind": "reflex-stop", "cycle": cycle, "result": body.state.last_reflex_stop})
+            blocked_streak += 1
+            if blocked_streak >= 3:
+                scan_turn = await hallway_scout_scan_turn(command.zone, command.scan_angles, reason="recover after repeated reflex/blocked stops")
+                actions.append({"kind": "recovery-turn", "cycle": cycle, "result": scan_turn})
+                blocked_streak = 0
+
+    await body.stop()
+    final_sensors = body.sensors()
+    summary = plan_summary(actions)
+    done = remember_event(RoverEvent(kind=RoverEventKind.manual_control, source="hallway_scout", label="hallway scout complete", payload={"summary": summary, "final_sensors": final_sensors, "notes": command.notes}))
+    await pip_set_expression(ExpressionMode.proud, "done", 0.55)
+    if command.speak:
+        actions.append({"kind": "speech", "result": speak_text("Hallway scout complete. I stopped and I am waiting.")})
+    return {
+        "ok": True,
+        "started_movement": True,
+        "event": event.model_dump(),
+        "complete_event": done.model_dump(),
+        "summary": summary,
+        "final_front_distance_cm": final_sensors.get("front_distance_cm"),
+        "safety": "Short proven pulses, stop after every action, ultrasonic checks each cycle, scan+turn when blocked, camera/Hermes context at configured intervals.",
+        "actions": compact_plan(actions) if command.compact else actions,
+    }
 
 
 @app.post("/tasks/map-floor")

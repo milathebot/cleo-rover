@@ -184,6 +184,19 @@ def main(argv: list[str] | None = None) -> int:
     first_adventure.add_argument("--verbose", action="store_true")
     first_adventure.add_argument("--notes", default=None)
 
+    hallway_scout = sub.add_parser("hallway-scout")
+    hallway_scout.add_argument("--zone", default="hallway-transition")
+    hallway_scout.add_argument("--allow-movement", action="store_true")
+    hallway_scout.add_argument("--cycles", type=int, default=8)
+    hallway_scout.add_argument("--vision-every", type=int, default=3)
+    hallway_scout.add_argument("--step-cm", type=float, default=4.0)
+    hallway_scout.add_argument("--clear-cm", type=float, default=55.0)
+    hallway_scout.add_argument("--blocked-cm", type=float, default=45.0)
+    hallway_scout.add_argument("--pause-seconds", type=float, default=1.0)
+    hallway_scout.add_argument("--speak", action="store_true")
+    hallway_scout.add_argument("--verbose", action="store_true")
+    hallway_scout.add_argument("--notes", default=None)
+
     sub.add_parser("movement-status")
     sub.add_parser("movement-revoke")
     sub.add_parser("supervisor-status")
@@ -390,6 +403,27 @@ def main(argv: list[str] | None = None) -> int:
                 "explore_cycles": args.explore_cycles,
                 "require_preflight": not args.no_preflight_required,
                 "speak": not args.skip_speech,
+                "compact": not args.verbose,
+                "notes": args.notes,
+            },
+            timeout=timeout,
+        )
+    elif args.cmd == "hallway-scout":
+        timeout = max(45.0, 15.0 + args.cycles * (args.pause_seconds + 5.0))
+        result = request(
+            args.base,
+            "POST",
+            "/tasks/hallway-scout",
+            {
+                "zone": args.zone,
+                "allow_movement": args.allow_movement,
+                "cycles": args.cycles,
+                "vision_every": args.vision_every,
+                "step_cm": args.step_cm,
+                "clear_cm": args.clear_cm,
+                "blocked_cm": args.blocked_cm,
+                "pause_seconds": args.pause_seconds,
+                "speak": args.speak,
                 "compact": not args.verbose,
                 "notes": args.notes,
             },

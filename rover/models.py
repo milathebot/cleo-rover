@@ -139,6 +139,21 @@ class MapFloorTaskCommand(BaseModel):
     notes: str | None = Field(default=None, max_length=240)
 
 
+class HallwayScoutCommand(BaseModel):
+    zone: str = Field(default="hallway-transition", max_length=80)
+    allow_movement: bool = False
+    cycles: int = Field(default=8, ge=1, le=30)
+    vision_every: int = Field(default=3, ge=0, le=10)
+    step_cm: float = Field(default=4.0, ge=1.0, le=10.0)
+    clear_cm: float = Field(default=55.0, ge=35.0, le=140.0)
+    blocked_cm: float = Field(default=45.0, ge=30.0, le=100.0)
+    scan_angles: list[float] = Field(default_factory=lambda: [-70, -45, -25, 0, 25, 45, 70], max_length=9)
+    pause_seconds: float = Field(default=1.0, ge=0.0, le=8.0)
+    speak: bool = False
+    compact: bool = True
+    notes: str | None = Field(default=None, max_length=240)
+
+
 class ReactiveExploreCommand(BaseModel):
     zone: str = Field(default="office", max_length=80)
     allow_movement: bool = False
