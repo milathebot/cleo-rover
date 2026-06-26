@@ -402,6 +402,17 @@ Personality + safety features for living around the house (a family + cats):
   raises the bar to roam (Pip settles and observes — e.g. after a string of bumps),
   an eager mood lowers it.
 
+### Live camera & teleop
+
+`GET /camera/stream.mjpg` serves an on-demand MJPEG feed from the Pi camera
+(`rpicam-vid`; hardware-only, single-viewer, auto-released when the viewer closes).
+The operator dashboard has a **Camera** panel toggle plus working manual-drive
+buttons and a one-tap **👋 Say hi** / `say <text>` box (`POST /speech/say`). Together
+these let you **teleoperate Pip into another room while watching the feed and have it
+speak on arrival** — the practical way to send it on an errand today. Autonomous
+room-to-room navigation (and self-docking) still waits on encoders/IMU/LiDAR; the
+reflexes (obstacle/cliff/watchdog) stay active during teleop as the safety net.
+
 ## Hardware status
 
 Current verified bench state:
