@@ -37,7 +37,7 @@ def test_pan_trim_offsets_physical_pulse_only():
     # pan_trim_deg shifts the physical servo pulse so logical 0deg points dead ahead,
     # without changing the reported/logical pan_deg the safety layers reason about.
     from rover.config import RoverConfig
-    from rover.freenove import FreenoveBody
+    from rover.freenove import FreenoveHardware
     from rover.models import TurretCommand
 
     captured: dict[int, int] = {}
@@ -46,7 +46,7 @@ def test_pan_trim_offsets_physical_pulse_only():
         def set_servo_pulse_us(self, channel: int, us: int) -> None:
             captured[channel] = us
 
-    body = object.__new__(FreenoveBody)  # bypass hardware __init__
+    body = object.__new__(FreenoveHardware)  # bypass hardware __init__
     cfg = RoverConfig()
     cfg.turret.pan_trim_deg = -16.0
     body.config = cfg
