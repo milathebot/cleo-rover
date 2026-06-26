@@ -42,6 +42,9 @@ from . import cruise as cruise_mod
 from . import battery as battery_mod
 from . import rgb_affect as rgb_affect_mod
 from . import degrade as degrade_mod
+from . import companion as companion_mod
+from . import sounds as sounds_mod
+from . import notify as notify_mod
 from .occupancy import OccupancyGrid, grid_config_from
 from .topo_map import TopoMap
 from . import topo_executor as topo_exec
@@ -97,6 +100,13 @@ DEFAULT_PIP_STATE = {
     "last_life_tick_at": None,
     "boredom": 0.35,
     "mood": "curious",
+    # Household-companion state (persisted): no-go zones (e.g. top of stairs) and
+    # proactive/assist/cat/digest cooldown stamps (cat counts come from the event log).
+    "hazard_zones": [],
+    "last_carry_request_at": None,
+    "last_proactive_at": None,
+    "last_cat_react_at": None,
+    "last_digest_day": None,
 }
 pip_state = {**DEFAULT_PIP_STATE, **(store.load_json("pip_state") or {})}
 pip_interrupts: list[dict] = list(store.load_json("pip_interrupts") or [])
@@ -491,6 +501,7 @@ def life_heartbeat_step() -> dict:
     # Feed the sag-aware estimator (idle samples are trusted; in-motion advisory).
     update_battery(sensors_now)
     save_battery_state()  # persist EMA + debounce so a reboot can't reset the trip
+    maybe_send_daily_digest()  # once-per-evening "Pip's day" to the owner's phone
     if percent is not None:
         remember_event(RoverEvent(kind=RoverEventKind.battery, source="heartbeat", value=float(percent), payload={"percent": percent}))
     idle = remember_event(RoverEvent(kind=RoverEventKind.idle_tick, source="heartbeat", timestamp=time.time()))
@@ -677,6 +688,7 @@ def life_diary() -> dict:
 
     reading = _last_battery if _last_battery is not None else update_battery(body.sensors())
     entries = [e.model_dump() for e in store.recent_events(40)]
+    midnight = time.time() - (_now_minutes() * 60)
     diary = diary_mod.compose_diary(
         feelings=pip_feelings(),
         recent_events=entries,
@@ -684,6 +696,7 @@ def life_diary() -> dict:
         place_count=len(TOPO.nodes),
         battery_percent=getattr(reading, "soc_percent", None),
         charging=bool(getattr(reading, "charging", False)),
+        cat_sightings=len(recent_cat_sightings(50, since=midnight)),
     )
     return {"ok": True, **diary}
 
@@ -1841,6 +1854,26 @@ def pip_set_exploration_goal(destination: str, *, source: str) -> dict:
     return goal
 
 
+async def _say_with_mind(prompt: str, *, fallback: str, action: str, mood: str = "happy", chirp: str = "happy") -> dict:
+    """Say something via the LLM mind when it's online, else a canned fallback, and
+    actually speak it. Used by the playful voice commands (jokes, etc.)."""
+    line: str | None = None
+    if mind.mind_configured() or hermes_configured():
+        try:
+            res = await asyncio.to_thread(ask_hermes_as_pip, prompt, context={"brain": pip_brain_snapshot(compact=True)})
+            if res.get("ok"):
+                line = str(res.get("answer") or "").strip()
+        except Exception:
+            line = None
+    line = line or fallback
+    pip_state["mood"] = mood
+    await pip_set_expression(ExpressionMode.speaking, "pip", 0.55)
+    sounds_mod.play_chirp(chirp)
+    speech = await asyncio.to_thread(speak_text, line)
+    remember_event(RoverEvent(kind=RoverEventKind.speech, source="pip_say", label=action, payload={"text": line, "speech": speech}))
+    return {"ok": True, "handled": True, "action": action, "answer": line, "speech": speech}
+
+
 @app.post("/pip/command")
 async def pip_command(command: PipCommand) -> dict:
     text = command.text.strip().lower()
@@ -1875,6 +1908,31 @@ async def pip_command(command: PipCommand) -> dict:
     if text in {"stop", "pip stop"}:
         await body.stop()
         return {"ok": True, "handled": True, "action": "stop", "stopped": True}
+    # --- household-companion voice interactions ---
+    if text in {"come here", "pip come here", "come", "come back", "here pip", "come to me"}:
+        res = await behavior_socialize(allow_movement=command.allow_movement, quiet=False)
+        sounds_mod.play_chirp("happy")
+        speech = await asyncio.to_thread(speak_text, "Coming!")
+        return {"ok": True, "handled": True, "action": "come", "result": res, "speech": speech}
+    if text in {"what did you see today", "what have you seen", "what did you do today", "how was your day", "pip diary", "diary", "what did you see"}:
+        d = life_diary()
+        summary = d.get("summary") or d.get("mood_line") or "It's been a quiet day."
+        speech = await asyncio.to_thread(speak_text, summary)
+        return {"ok": True, "handled": True, "action": "diary", "summary": summary, "diary": d, "speech": speech}
+    if text in {"where are the cats", "where is the cat", "where's the cat", "where are the kitties", "have you seen the cats", "have you seen the cat", "find the cat", "find the cats"}:
+        sightings = recent_cat_sightings(10)
+        report = companion_mod.compose_cat_report(sightings)
+        await pip_set_expression(ExpressionMode.curious, "cats?", 0.55)
+        speech = await asyncio.to_thread(speak_text, report)
+        return {"ok": True, "handled": True, "action": "cat_report", "report": report, "sightings": sightings, "speech": speech}
+    if text in {"tell me a joke", "joke", "pip joke", "say something funny", "make me laugh", "tell a joke"}:
+        return await _say_with_mind(
+            "Tell me a short, clean, family-friendly joke in one or two sentences.",
+            fallback="Why did the robot cross the room? To get to the other server!",
+            action="joke",
+            mood="happy",
+            chirp="happy",
+        )
     hermes_context = {"state": pip_public_state(), "brain": pip_brain_snapshot(compact=True)}
     # Blocking HTTP/TTS off the event loop so the reflex watchdog keeps running.
     hermes = await asyncio.to_thread(ask_hermes_as_pip, command.text, context=hermes_context)
@@ -1895,6 +1953,74 @@ async def pip_command(command: PipCommand) -> dict:
         "bridge": hermes,
         "note": "Set HERMES_API_BASE/HERMES_API_KEY (or CLEO_ROVER_HERMES_API_BASE/_API_KEY) on cleo-rover-body to let Pip ask Hermes automatically, then speak the answer.",
     }
+
+
+@app.post("/hazard/mark")
+def hazard_mark(name: str | None = None) -> dict:
+    """Mark a place as a no-go zone Pip must never autonomously enter (e.g. the top
+    of the stairs). Defaults to the current place. Persisted across reboots. Teach
+    it once: drive Pip to the stair landing, /topo/observe?name=stairs, then this."""
+    zone = (name or _last_topo_node or "").strip().lower()
+    if not zone:
+        return {"ok": False, "reason": "no name given and current place is unknown; pass ?name=stairs"}
+    zones = [str(z).lower() for z in (pip_state.get("hazard_zones") or [])]
+    if zone not in zones:
+        zones.append(zone)
+        pip_state["hazard_zones"] = zones
+        save_pip_runtime()
+    return {"ok": True, "hazard_zones": pip_state["hazard_zones"]}
+
+
+@app.get("/hazard/zones")
+def hazard_zones() -> dict:
+    return {"ok": True, "hazard_zones": pip_state.get("hazard_zones", [])}
+
+
+@app.delete("/hazard/clear")
+def hazard_clear(name: str | None = None) -> dict:
+    if name:
+        zones = [z for z in (pip_state.get("hazard_zones") or []) if str(z).lower() != name.strip().lower()]
+    else:
+        zones = []
+    pip_state["hazard_zones"] = zones
+    save_pip_runtime()
+    return {"ok": True, "hazard_zones": zones}
+
+
+def compose_daily_digest() -> str:
+    """A friendly end-of-day summary for the owner's phone, grounded in real state."""
+    diary = life_diary()
+    midnight = time.time() - (_now_minutes() * 60)
+    cats = len(recent_cat_sightings(50, since=midnight))
+    reading = _last_battery
+    return companion_mod.compose_digest(diary, cat_sightings=cats, places=len(TOPO.nodes), battery_percent=getattr(reading, "soc_percent", None))
+
+
+def maybe_send_daily_digest() -> None:
+    """Once per evening, push Pip's 'day' to the owner's phone. Self-gating + best
+    effort; called from the heartbeat."""
+    if not notify_mod.notify_available():
+        return
+    local = time.localtime()
+    if local.tm_hour < 20:  # evening only
+        return
+    today = f"{local.tm_year}-{local.tm_yday}"
+    if pip_state.get("last_digest_day") == today:
+        return
+    pip_state["last_digest_day"] = today
+    save_pip_runtime()
+    try:
+        notify_mod.notify_owner(compose_daily_digest())
+    except Exception:
+        pass
+
+
+@app.post("/pip/digest")
+def pip_digest(send: bool = True) -> dict:
+    """Build (and optionally send to Telegram) Pip's daily digest now."""
+    text = compose_daily_digest()
+    sent = notify_mod.notify_owner(text) if send else {"ok": False, "skipped": True}
+    return {"ok": True, "digest": text, "sent": sent}
 
 
 @app.get("/supervisor/status")
@@ -3292,9 +3418,99 @@ async def behavior_socialize(*, allow_movement: bool, quiet: bool) -> dict:
             # Even bench-safe, Pip can orient its turret/gaze toward the person.
             await body.set_turret(TurretCommand(pan_deg=max(-80.0, min(80.0, turn_deg))))
             actions.append({"kind": "look", "pan_deg": turn_deg})
-    if react.get("reaction") == "social.greet" or react.get("reaction") == "greet":
+    # Cat mode: when it's a cat (not a person), give a gentle rate-limited reaction
+    # and a soft chirp -- and NEVER approach (social keeps its distance for pets).
+    if info["pet"] and not info["person"] and not quiet:
+        cat = await maybe_cat_reaction()
+        if cat:
+            actions.append({"kind": "cat_reaction", "line": cat})
+    elif react.get("reaction") in {"social.greet", "greet"}:
+        sounds_mod.play_chirp("greet")
         await pip_greet(source="social")
     return {"behavior": "socialize", "reaction": react, "actions": actions}
+
+
+async def maybe_cat_reaction() -> str | None:
+    """A friendly, rate-limited cat acknowledgement (keeps distance; logs a note)."""
+    now = time.time()
+    last = pip_state.get("last_cat_react_at")
+    if last is not None and (now - float(last)) < 30.0:
+        return None
+    line = companion_mod.cat_reaction_line(int(now) // 30)
+    pip_state["last_cat_react_at"] = now
+    save_pip_runtime()
+    await pip_set_expression(ExpressionMode.curious, "kitty", 0.55)
+    sounds_mod.play_chirp("cat")
+    if body.mode == "hardware":
+        await asyncio.to_thread(speak_text, line)
+    remember_event(RoverEvent(kind=RoverEventKind.speech, source="pip_cat", label="cat reaction", payload={"text": line}))
+    return line
+
+
+async def behavior_request_assist() -> dict:
+    """At an edge/stairs: stop, and (rate-limited) ask out loud to be carried + ping
+    the owner's phone + show an alert. NEVER self-moves -- the only way down is a
+    human lift."""
+    await body.stop()
+    now = time.time()
+    last = pip_state.get("last_carry_request_at")
+    spoke = False
+    if last is None or (now - float(last)) >= 60.0:  # don't be a broken record
+        line = companion_mod.carry_request_line(int(now) // 60)
+        await pip_set_expression(ExpressionMode.alert, "stairs!", 0.7)
+        sounds_mod.play_chirp("alert")
+        await asyncio.to_thread(speak_text, line)
+        notify_mod.notify_owner(f"🪜 {line}")
+        remember_event(RoverEvent(kind=RoverEventKind.obstacle, source="pip_stairs", label="edge: asked to be carried", payload={"text": line}))
+        pip_state["last_carry_request_at"] = now
+        save_pip_runtime()
+        spoke = True
+    return {"behavior": "request_assist", "spoke": spoke, "held": True}
+
+
+async def maybe_proactive_remark(ctx: dict) -> None:
+    """Occasionally voice a spontaneous thought while observing -- the difference
+    between 'alive' and 'a service'. Hardware-only (needs a speaker) + rate-limited;
+    uses the LLM mind for variety when it's online, else a deterministic line."""
+    if body.mode != "hardware" or ctx.get("quiet") or ctx.get("do_not_disturb"):
+        return
+    now = time.time()
+    last = pip_state.get("last_proactive_at")
+    if last is not None and (now - float(last)) < 240.0:
+        return
+    line: str | None = None
+    if mind.mind_configured() or hermes_configured():
+        try:
+            res = await asyncio.to_thread(
+                ask_hermes_as_pip,
+                "In one short, warm sentence, share a spontaneous thought about your surroundings right now.",
+                context={"brain": pip_brain_snapshot(compact=True)},
+            )
+            if res.get("ok"):
+                line = str(res.get("answer") or "").strip()[:160]
+        except Exception:
+            line = None
+    if not line:
+        line = companion_mod.proactive_line(int(now) // 240, person=bool(ctx.get("person_present")), pet=bool(ctx.get("pet_present")), place=_last_topo_node)
+    pip_state["last_proactive_at"] = now
+    save_pip_runtime()
+    await pip_set_expression(ExpressionMode.curious, "hmm", 0.5)
+    sounds_mod.play_chirp("curious")
+    await asyncio.to_thread(speak_text, line)
+    remember_event(RoverEvent(kind=RoverEventKind.speech, source="pip_proactive", label="musing", payload={"text": line}))
+
+
+def recent_cat_sightings(limit: int = 20, *, since: float | None = None) -> list[dict]:
+    """Recent cat sightings from the vision-analysis event log (newest first)."""
+    out: list[dict] = []
+    now = time.time()
+    for ev in store.recent_events(60, since=since, kind=RoverEventKind.vision_analysis.value):
+        labels = {str(label).lower() for label in (ev.payload.get("labels") or [])}
+        if labels & {"cat", "kitten", "kitty"}:
+            out.append({"zone": ev.payload.get("zone"), "bearing": None, "age_s": now - float(ev.timestamp or now)})
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _now_minutes() -> int:
@@ -3319,6 +3535,10 @@ def arbiter_context() -> dict:
     info = _latest_person_pet()
     front = sensors_now.get("front_distance_cm")
     hazards_present = front is not None and float(front) < float(CONFIG.safety.front_stop_distance_cm) + 10.0
+    # Edge/stairs: a recent downward-IR cliff reflex means hold + ask to be carried.
+    rs = body.state.last_reflex_stop
+    edge_detected = bool(rs and rs.get("kind") == "cliff" and (time.time() - float(rs.get("time") or 0.0)) < 25.0)
+    at_hazard = companion_mod.is_hazard_place(_last_topo_node, pip_state.get("hazard_zones"))
     return {
         "mode": pip_state.get("mode"),
         "awake": pip_state.get("awake"),
@@ -3330,6 +3550,9 @@ def arbiter_context() -> dict:
         "boredom": feelings["boredom"],
         "has_goal": active_goal() is not None,
         "person_present": info["person"] or info["pet"],
+        "pet_present": info["pet"],
+        "edge_detected": edge_detected,
+        "at_hazard": at_hazard,
         "hazards_present": hazards_present,
         "quiet": quiet,
         "do_not_disturb": autonomy.state.do_not_disturb,
@@ -3360,12 +3583,15 @@ async def arbiter_tick(*, allow_movement: bool = False) -> dict:
     elif behavior == arbiter.BEHAVIOR_PATROL:
         loop = await little_being_loop(LittleBeingLoopCommand(zone=str(pip_state.get("current_zone") or "office"), allow_movement=move_ok, duration_seconds=30, explore_cycles=4 + round(autonomy.state.curiosity * 4), capture_vision=True, compact=True, mood=autonomy.state.mood))
         result = {"summary": loop.get("summary")}
+    elif behavior == arbiter.BEHAVIOR_REQUEST_ASSIST:
+        result = await behavior_request_assist()
     elif behavior == arbiter.BEHAVIOR_HOLD:
         await body.stop()
         result = {"holding": True}
     else:  # observe
         observe = await vision_awareness_task(VisionAwarenessCommand(zone=str(pip_state.get("current_zone") or "office"), capture=False, scan=True, compact=True, notes="arbiter observe"))
         result = {"scan_summary": observe.get("scan_summary")}
+        await maybe_proactive_remark(ctx)
     remember_event(RoverEvent(kind=RoverEventKind.idle_tick, source="arbiter", label=f"arbiter:{behavior}", payload={"decision": decision}))
     record_task_result(f"arbiter:{behavior}", started, did_move=move_ok and behavior in {arbiter.BEHAVIOR_RETURN_TO_CHARGER, arbiter.BEHAVIOR_PURSUE_GOAL, arbiter.BEHAVIOR_PATROL}, extra={"reason": decision.get("reason")})
     return {"ok": True, "decision": decision, "context": ctx, "result": result}

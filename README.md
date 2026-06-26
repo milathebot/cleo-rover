@@ -357,6 +357,31 @@ This stores observations in SQLite with zone, bearing, distance, confidence, not
 
 Autonomy can request tiny movement, but the body refuses real movement unless movement is explicitly allowed and motors are armed. The default config remains bench-safe.
 
+### Household companion
+
+Personality + safety features for living around the house (a family + cats):
+
+- **Stairs / no-go zones.** Mark a place Pip must never autonomously enter
+  (`POST /hazard/mark?name=stairs` — teach it once at the stair landing). The
+  arbiter never patrols into a no-go zone, and when the downward-IR **cliff reflex
+  trips** Pip *holds and asks out loud to be carried* (`request_assist` behavior:
+  speech + alert chirp + a Telegram ping to the owner), instead of stopping
+  silently. **⚠ Safety:** the cliff reflex needs all three IR sensors to read a
+  drop — an angled approach or a glitching sensor can still go over. Treat this as
+  defense-in-depth and keep a **physical barrier at the top of the stairs** until a
+  dedicated downward laser ToF is added and supervised-tested.
+- **Cat mode 🐱.** When the vision detector sees a cat (not a person), Pip gives a
+  gentle, rate-limited reaction + soft chirp and *keeps its distance* (never chases
+  — `cat_respect` is 0.95). Sightings are logged and surface in the diary + digest.
+- **Proactive personality.** While observing, Pip occasionally voices a spontaneous
+  thought (LLM mind when online, deterministic line otherwise) and emits
+  R2-D2-style emotion chirps (`rover/sounds.py`). Hardware-only + rate-limited.
+- **Voice mini-interactions** (on top of the wake-word pipeline): "come here",
+  "what did you see today?" (reads the diary), "where are the cats?", "tell me a
+  joke". All via `/pip/command`; talking never moves Pip.
+- **Daily digest to your phone.** Each evening Pip pushes a "Pip's day" summary to
+  Telegram (`rover/notify.py`); build it on demand with `POST /pip/digest`.
+
 ## Hardware status
 
 Current verified bench state:

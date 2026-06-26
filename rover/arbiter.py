@@ -19,6 +19,7 @@ BEHAVIOR_SOCIALIZE = "socialize"
 BEHAVIOR_PATROL = "patrol"
 BEHAVIOR_OBSERVE = "observe"
 BEHAVIOR_HOLD = "hold"
+BEHAVIOR_REQUEST_ASSIST = "request_assist"  # at an edge/stairs: hold + ask to be carried
 
 
 def _hhmm_to_minutes(value: str) -> int | None:
@@ -61,6 +62,12 @@ def arbitrate(ctx: dict) -> dict:
     if mode == "sleep" or ctx.get("awake") is False:
         return out(BEHAVIOR_REST, "asleep / sleep mode")
 
+    # Physical edge/stairs is the most urgent state: a downward-drop reflex fired
+    # (or we're sitting at a known no-go). Never self-move; hold and ask out loud
+    # to be carried. Above battery so Pip never drives toward the stairs to charge.
+    if ctx.get("edge_detected"):
+        return out(BEHAVIOR_REQUEST_ASSIST, "edge/drop detected — holding and asking to be carried")
+
     # Self-preservation is the top non-safety priority. Skip it if already charging
     # (Pip is docked, so don't drive off looking for the charger).
     charging = bool(ctx.get("battery_charging"))
@@ -93,8 +100,13 @@ def arbitrate(ctx: dict) -> dict:
     if ctx.get("has_goal"):
         return out(BEHAVIOR_PURSUE_GOAL, "pursuing active goal")
 
-    # Curiosity/boredom drive exploration when movement is allowed.
-    if ctx.get("movement_allowed") and (float(ctx.get("curiosity", 0.0) or 0.0) >= 0.68 or float(ctx.get("boredom", 0.0) or 0.0) >= 0.6):
+    # Curiosity/boredom drive exploration when movement is allowed -- but never
+    # wander while parked at a marked no-go (top of the stairs): just observe.
+    if (
+        ctx.get("movement_allowed")
+        and not ctx.get("at_hazard")
+        and (float(ctx.get("curiosity", 0.0) or 0.0) >= 0.68 or float(ctx.get("boredom", 0.0) or 0.0) >= 0.6)
+    ):
         return out(BEHAVIOR_PATROL, "curious/bored and free to move; patrolling")
 
     return out(BEHAVIOR_OBSERVE, "calm presence; observing")

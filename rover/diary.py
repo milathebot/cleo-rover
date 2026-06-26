@@ -21,6 +21,7 @@ _BEHAVIOR_PHRASES = {
     "pursue_goal": "I worked on something I was asked to do",
     "rest": "I rested",
     "hold": "I paused because something was in my way",
+    "request_assist": "I found the stairs and waited for someone to carry me",
 }
 
 _MOOD_PHRASES = {
@@ -57,6 +58,7 @@ def compose_diary(
     place_count: int = 0,
     battery_percent: float | None = None,
     charging: bool = False,
+    cat_sightings: int = 0,
 ) -> dict[str, Any]:
     """Compose a short diary from Pip's real state. Returns {mood_line, lines, summary}."""
     mood = str(feelings.get("mood") or "calm")
@@ -83,6 +85,12 @@ def compose_diary(
         if subj and obj:
             detail = f" ({fact['detail']})" if fact.get("detail") else ""
             lines.append(f"I remember the {subj} is in the {obj}{detail}.")
+
+    # The cats.
+    if cat_sightings == 1:
+        lines.append("I spotted one of the cats today.")
+    elif cat_sightings > 1:
+        lines.append(f"I saw the cats {cat_sightings} times today.")
 
     # How my body feels.
     if charging:
