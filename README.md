@@ -319,8 +319,19 @@ Implemented behaviors:
 ### Phase D: voice/hearing hooks
 
 `/hearing/simulate` creates synthetic events for testing; the **real** offline
-voice path (wake-word → STT → `/pip/command`, via `rover/voice_daemon.py` and
-`/hearing/listen`) is now implemented.
+voice path is implemented end-to-end in `rover/voice_daemon.py`:
+
+> **wake word** (openWakeWord) → **VAD-gated capture** (silero-vad, stop on
+> trailing silence) → **offline STT** (faster-whisper → whisper.cpp → vosk) →
+> `/hearing/listen` → `/pip/command`.
+
+Every stage degrades gracefully — a missing library/model is skipped and reported,
+never fatal. Talking **never** moves Pip: voice routes with `allow_movement=False`,
+so motion stays gated by grants + armed motors. Live state is on `GET /voice/status`
+(installed backends, mic probe, readiness, recent wake/transcript activity) and the
+daemon posts hearing state to `POST /voice/event` so the console shows a live
+"listening" indicator. Run it as a service with
+`scripts/install_voice_daemon_systemd.sh`. **Full walkthrough:** [docs/VOICE_SETUP.md](docs/VOICE_SETUP.md).
 
 ### Phase E: vision hooks
 

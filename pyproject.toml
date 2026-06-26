@@ -45,11 +45,15 @@ vision = [
     "opencv-python-headless>=4.8; platform_machine=='aarch64'",
 ]
 
-# Optional offline voice (wake word + STT). See rover/voice_daemon.py.
+# Optional offline voice: wake word -> VAD -> STT. See rover/voice_daemon.py and
+# docs/VOICE_SETUP.md. faster-whisper/silero-vad are CPU/pure-python (cross-platform);
+# openwakeword is gated to the Pi so a dev `pip install .[voice]` stays light.
 voice = [
     "numpy>=1.24",
     "sounddevice>=0.4",
     "openwakeword>=0.6; platform_machine=='aarch64'",
+    "faster-whisper>=1.0",
+    "silero-vad>=5.1",
 ]
 
 [tool.setuptools]

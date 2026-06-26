@@ -5,6 +5,7 @@ import os
 import re
 import time
 import traceback
+from collections import deque
 from typing import Any
 
 from fastapi import FastAPI, Response
@@ -138,11 +139,30 @@ CRUISE_PARAMS = cruise_mod.cruise_params_from(CONFIG.nav, CONFIG.odometry, CONFI
 CRUISE_SNAPSHOT = perception_mod.PolarSnapshot()
 # Honest battery state-of-charge + health (sag-aware, idle-gated, debounced low).
 BATTERY = battery_mod.BatteryEstimator()
+# Restore the sag-aware estimator across reboots so the debounced critical trip
+# isn't reset by a power cycle (audit REL-4).
+BATTERY.restore(store.load_json("battery_state"))
 _last_battery: Any = None
+
+
+def save_battery_state() -> None:
+    try:
+        store.save_json("battery_state", BATTERY.snapshot())
+    except Exception:
+        pass
 _rgb_task_handle: Any = None
 # Unified, lightweight task history (a finished-product "what has Pip been doing?"
 # surface without rewriting every task's response schema).
 _task_history: list[dict] = list(store.load_json("task_history") or [])
+
+# --- voice / hearing activity (operator console + wake-word telemetry) ---------
+# Live "is Pip listening?" state plus a small ring of recent transcripts, fed by
+# the voice daemon (/voice/event) and /hearing/listen so the console can show
+# hearing without the daemon and the body sharing a process.
+_voice_state: dict[str, Any] = {"listening": False, "last_wake_at": None, "wake_count": 0, "last_error": None}
+_voice_transcripts: deque = deque(maxlen=12)
+# The mic probe spawns `arecord -l`; cache it so a polling dashboard can't spam it.
+_mic_probe_cache: dict[str, Any] = {"at": 0.0, "value": None}
 
 
 def record_task_result(name: str, started: float, *, did_move: bool = False, ok: bool = True, extra: dict | None = None) -> dict:
@@ -307,6 +327,7 @@ async def stop_body_watchdog() -> None:
             store.save_cooldowns(autonomy.last_behavior_at)
         save_pip_runtime()
         save_topo()
+        save_battery_state()
     except Exception:
         pass
 
@@ -365,17 +386,29 @@ def active_movement_grant() -> dict | None:
     return movement_grant
 
 
+# Bounds on grant extension so a buggy/runaway caller can never grant Pip
+# open-ended unattended motion: each call buys at most PER_CALL seconds, and the
+# expiry can never sit more than MAX_LOOKAHEAD into the future (so the grant must
+# be actively, repeatedly renewed -- it can't be parked far ahead once).
+GRANT_EXTEND_PER_CALL_S = 60.0
+GRANT_EXTEND_MAX_LOOKAHEAD_S = 120.0
+
+
 def extend_active_movement_grant(seconds: float) -> None:
     """Keep an internal task grant alive while a supervised task is still running.
 
     Speech/camera scans can take longer than the original movement window. This
     does not move the rover by itself; it only prevents safe, short chunks inside
-    the current task from failing due to narration latency.
+    the current task from failing due to narration latency. Bounded so it can't be
+    abused into indefinite unattended autonomy (audit REL-11).
     """
     global movement_grant
     if movement_grant is None or not movement_grant.get("active"):
         return
-    movement_grant["expires_at"] = max(float(movement_grant.get("expires_at", 0)), time.time() + float(seconds))
+    seconds = max(0.0, min(float(seconds), GRANT_EXTEND_PER_CALL_S))
+    now = time.time()
+    new_expiry = max(float(movement_grant.get("expires_at", 0)), now + seconds)
+    movement_grant["expires_at"] = min(new_expiry, now + GRANT_EXTEND_MAX_LOOKAHEAD_S)
 
 
 def sensor_safety_event(sensors_now: dict, *, source: str) -> RoverEvent | None:
@@ -406,6 +439,35 @@ def remember_event(event: RoverEvent) -> RoverEvent:
     return saved
 
 
+def record_voice_transcript(text: str | None, *, source: str = "voice", action: str | None = None) -> None:
+    if not text:
+        return
+    _voice_transcripts.appendleft({"text": str(text)[:140], "source": source, "action": action, "at": round(time.time(), 2)})
+
+
+def voice_state_snapshot() -> dict:
+    return {
+        "listening": _voice_state["listening"],
+        "last_wake_at": _voice_state["last_wake_at"],
+        "wake_count": _voice_state["wake_count"],
+        "last_error": _voice_state["last_error"],
+        "transcripts": list(_voice_transcripts),
+    }
+
+
+def cached_mic_status() -> dict:
+    """A short-TTL cache around the (subprocess) mic probe so a polling console
+    can't fork `arecord -l` several times a second."""
+    now = time.time()
+    if _mic_probe_cache["value"] is None or now - _mic_probe_cache["at"] > 15.0:
+        try:
+            _mic_probe_cache["value"] = voice_daemon.mic_status(CONFIG.voice.mic_device)
+        except Exception as exc:  # never let a probe crash status
+            _mic_probe_cache["value"] = {"ready": False, "detail": f"probe error: {exc!r}", "cards": []}
+        _mic_probe_cache["at"] = now
+    return _mic_probe_cache["value"]
+
+
 def pip_feelings() -> dict:
     """Single unified view of Pip's emotional state (the AutonomyEngine is the
     source of truth; boredom is the legacy life-loop scalar kept for continuity)."""
@@ -428,6 +490,7 @@ def life_heartbeat_step() -> dict:
     percent = sensors_now.get("battery_percent")
     # Feed the sag-aware estimator (idle samples are trusted; in-motion advisory).
     update_battery(sensors_now)
+    save_battery_state()  # persist EMA + debounce so a reboot can't reset the trip
     if percent is not None:
         remember_event(RoverEvent(kind=RoverEventKind.battery, source="heartbeat", value=float(percent), payload={"percent": percent}))
     idle = remember_event(RoverEvent(kind=RoverEventKind.idle_tick, source="heartbeat", timestamp=time.time()))
@@ -515,6 +578,15 @@ def health() -> dict:
     return {"ok": True, "mode": body.mode, "name": CONFIG.name, "profile": CONFIG.profile, "version": app.version, "soul_version": PIP_SOUL_VERSION}
 
 
+@app.get("/alive")
+def alive() -> dict:
+    """Cheapest possible liveness ping (no sensor/I2C I/O) so a console can tell
+    'lost the network link' from 'Pip is wedged' without polling the heavy
+    composite. When this answers but the body is misbehaving, reflexes still hold
+    locally on the Pi."""
+    return {"ok": True, "t": round(time.time(), 2), "mode": body.mode}
+
+
 @app.get("/health/composite")
 def health_composite() -> dict:
     """The single 'is Pip OK / what is it doing / can it do X right now?' view.
@@ -565,6 +637,7 @@ def health_composite() -> dict:
         "movement": {"permitted": move_ok, "reason": move_reason, "grant": grant, "owner": (grant or {}).get("owner")},
         "goal": goal.model_dump() if goal else None,
         "degradation": degradation.as_dict(),
+        "thermal": {"cpu_c": cpu_temp_c(), "warn_c": CONFIG.safety.thermal_warn_c, "hard_c": CONFIG.safety.thermal_hard_c},
         "arbiter": {"would_choose": decision.get("behavior"), "reason": decision.get("reason")},
         "nav": {
             "current_place": _last_topo_node,
@@ -580,6 +653,11 @@ def health_composite() -> dict:
             "adc_ready": sensors_now.get("adc_ready"),
             "camera_ready": (sensors_now.get("camera") or {}).get("ready"),
             "mind_configured": hermes_configured() or mind.mind_configured(),
+            # Cheap (import/which) voice readiness; the live mic probe lives in /voice/status.
+            "voice_enabled": CONFIG.voice.enabled,
+            "voice_listening": _voice_state["listening"],
+            "stt_ready": voice_daemon.stt_ready(),
+            "wake_ready": voice_daemon.wake_ready(),
         },
     }
 
@@ -864,7 +942,52 @@ async def hearing_listen(text: str | None = None, seconds: float = 4.0) -> dict:
         return {"ok": True, "available": True, "transcript": None, "note": "no speech recognized"}
     remember_event(RoverEvent(kind=RoverEventKind.speech, source="voice", label="heard", payload={"text": transcript}))
     routed = await pip_command(PipCommand(text=transcript, source="voice"))
+    record_voice_transcript(transcript, source="voice", action=routed.get("action"))
+    _voice_state["listening"] = False
     return {"ok": True, "available": True, "transcript": transcript, "listen": listen_result, "routed": routed}
+
+
+@app.post("/voice/event")
+def voice_event(phase: str, text: str | None = None, score: float | None = None, error: str | None = None) -> dict:
+    """Lightweight hook the voice daemon calls so the console shows a live hearing
+    state. phase: wake | heard | idle | error. 'wake' also logs a wake_word event."""
+    p = (phase or "").strip().lower()
+    if p == "wake":
+        _voice_state["listening"] = True
+        _voice_state["last_wake_at"] = round(time.time(), 2)
+        _voice_state["wake_count"] += 1
+        _voice_state["last_error"] = None
+        remember_event(RoverEvent(kind=RoverEventKind.wake_word, source="voice", label="wake word", value=score, payload={"score": score}))
+    elif p == "heard":
+        _voice_state["listening"] = False
+        record_voice_transcript(text)
+    elif p == "error":
+        _voice_state["listening"] = False
+        _voice_state["last_error"] = error
+    else:  # idle / done / timeout
+        _voice_state["listening"] = False
+    return {"ok": True, **voice_state_snapshot()}
+
+
+@app.get("/voice/status")
+def voice_status() -> dict:
+    """Everything needed to trust (or debug) hearing in one call: config, which
+    backends are installed, a live mic probe, readiness, and recent wake/transcript
+    activity. Powers the console's voice panel."""
+    cfg = CONFIG.voice
+    backends = voice_daemon.voice_backends()
+    return {
+        "ok": True,
+        "enabled": cfg.enabled,
+        "wakeword": cfg.wakeword,
+        "mic_device": cfg.mic_device or os.getenv("ALSA_CARD"),
+        "stt_backend": cfg.stt_backend,
+        "backends": backends,
+        "mic": cached_mic_status(),
+        "stt_ready": voice_daemon.stt_ready(backends),
+        "wake_ready": voice_daemon.wake_ready(backends),
+        **voice_state_snapshot(),
+    }
 
 
 @app.post("/vision/snapshot")

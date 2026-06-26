@@ -21,6 +21,27 @@ def test_operator_panel():
     assert "/expression/preview.png" in r.text
 
 
+def test_alive_is_cheap_and_ok():
+    data = client.get("/alive").json()
+    assert data["ok"] is True
+    assert "t" in data
+
+
+def test_movement_grant_extension_is_bounded():
+    # A runaway caller can't park the grant far into the future -> no accidental
+    # unattended autonomy (audit REL-11). It can only be kept alive in short hops.
+    import time
+
+    from rover import service
+
+    service.movement_grant = {"active": True, "expires_at": time.time() + 5, "owner": "test"}
+    try:
+        service.extend_active_movement_grant(100000)
+        assert service.movement_grant["expires_at"] <= time.time() + service.GRANT_EXTEND_MAX_LOOKAHEAD_S + 1
+    finally:
+        service.movement_grant = None
+
+
 def test_config_endpoint():
     r = client.get("/config")
     assert r.status_code == 200
