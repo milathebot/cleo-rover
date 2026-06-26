@@ -263,10 +263,10 @@ button.dis{opacity:.32; pointer-events:none; filter:grayscale(.7)}
         <details>
           <summary>⚠ manual drive (armed only)</summary>
           <div class='controls' id='drivepad' style='margin-top:8px'>
-            <button class='dbtn' onclick='drive(0.22,0)'>▲ fwd</button>
-            <button class='dbtn' onclick='drive(-0.22,0)'>▼ back</button>
-            <button class='dbtn' onclick='drive(0,-0.32)'>◄ left</button>
-            <button class='dbtn' onclick='drive(0,0.32)'>► right</button>
+            <button class='dbtn' onclick='drive(0.4,0,600)'>▲ fwd</button>
+            <button class='dbtn' onclick='drive(-0.4,0,600)'>▼ back</button>
+            <button class='dbtn' onclick='drive(0,-0.32,350)'>◄ left</button>
+            <button class='dbtn' onclick='drive(0,0.32,350)'>► right</button>
           </div>
           <div class='cmdresp' id='drivenote' style='margin-top:6px'></div>
         </details>
@@ -384,7 +384,7 @@ function tickClock(){ $('clock').textContent=new Date().toLocaleTimeString(); }
 async function live(on){ try{await j('/pip/live?on='+on,{method:'POST'});}catch(e){} fast(); }
 async function tick(){ try{await j('/pip/arbiter/tick?allow_movement=false',{method:'POST'});}catch(e){} fast(); }
 async function estop(){ $('estopstat').textContent='stopping…'; try{ const r=await j('/stop',{method:'POST'}); $('estopstat').innerHTML=r.stopped?'<b>STOPPED</b> · motors halted':'stop sent'; }catch(e){ $('estopstat').textContent='stop failed — retry'; } fast(); }
-async function drive(linear,turn){ try{await j('/drive',{method:'POST',body:JSON.stringify({linear,turn,duration_ms:350})});}catch(e){} fast(); }
+async function drive(linear,turn,ms){ try{await j('/drive',{method:'POST',body:JSON.stringify({linear,turn,duration_ms:ms||350})});}catch(e){} fast(); }
 setInterval(tickClock,1000); tickClock();
 setInterval(ping,2000); ping();
 setInterval(fast,1500); fast();
