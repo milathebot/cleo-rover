@@ -75,6 +75,7 @@
     "use_vfh_steering": true,
     "mapping_enabled": true,
     "wall_follow_enabled": true,
+    "cross_zone_roam_enabled": true,
     "flow_stall_enabled": false,
     "topo_enabled": true,
     "consolidation_enabled": true

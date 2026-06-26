@@ -10,11 +10,13 @@
 # reach on their own:
 #
 #   stage 1 (default)  : directed roaming -- frontier VFH steering + occupancy
-#                        mapping + wall-following availability. Advisory only; the
-#                        Pi-local reflex/cliff/bumper stops stay authoritative.
+#                        mapping + wall-following + ROOM-TO-ROOM roaming (Pip may
+#                        wander through doorways and learn/navigate rooms). Advisory
+#                        only; the Pi-local reflex/cliff/bumper stops stay authoritative.
 #   stage 2 (`arbiter`): the master switch -- let Pip self-drive (roam, act on
-#                        curiosity, hug walls). ONLY enable while you are present
-#                        and watching; the baby gate must guard the stairs.
+#                        curiosity, hug walls, cross rooms). ONLY enable while you are
+#                        present and watching; the baby gate MUST be closed at the
+#                        stairs (it + the cliff reflex are the room-to-room safety).
 #
 # Usage:
 #   bash scripts/enable_living_mode.sh            # stage 1 only (safe, no self-drive)
@@ -46,12 +48,14 @@ else:
     nav["use_vfh_steering"] = True
     nav["mapping_enabled"] = True
     nav["wall_follow_enabled"] = True
+    nav["cross_zone_roam_enabled"] = True
     if mode == "arbiter":
         lf["arbiter_enabled"] = True
 json.dump(c, open(path, "w"), indent=2)
-print("  nav.use_vfh_steering    =", nav.get("use_vfh_steering"))
-print("  nav.mapping_enabled     =", nav.get("mapping_enabled"))
-print("  nav.wall_follow_enabled =", nav.get("wall_follow_enabled"))
+print("  nav.use_vfh_steering     =", nav.get("use_vfh_steering"))
+print("  nav.mapping_enabled      =", nav.get("mapping_enabled"))
+print("  nav.wall_follow_enabled  =", nav.get("wall_follow_enabled"))
+print("  nav.cross_zone_roam      =", nav.get("cross_zone_roam_enabled"))
 print("  life_loop.arbiter_enabled =", lf.get("arbiter_enabled", "(default False)"))
 PY
 
