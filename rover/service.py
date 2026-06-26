@@ -885,11 +885,15 @@ def preflight(mode: str = "presence") -> dict:
         add("no_motor_profile", status_now.get("motors_armed") is False, "motors must be unarmed for presence/boot")
         add("bench_safe", status_now.get("safety", {}).get("bench_safe_no_motors") is True, "bench_safe_no_motors should be true")
     elif mode in {"floor", "floor-cautious"}:
-        add("floor_profile", status_now.get("profile") == "hardware-floor-cautious", "floor tests require hardware-floor-cautious profile")
+        # Accept the per-robot "-local" (and other) suffixes: any hardware-floor-cautious* profile.
+        add("floor_profile", str(status_now.get("profile") or "").startswith("hardware-floor-cautious"), "floor tests require a hardware-floor-cautious* profile")
         add("motor_profile_armed", status_now.get("motors_armed") is True, "floor profile should arm motors only after explicit mode switch")
+        # Median fallback so a single HC-SR04 dropout doesn't fail preflight.
         front_distance = sensors_now.get("front_distance_cm")
+        if front_distance is None:
+            front_distance = body.front_distance_median()
         front_clear = front_distance is None or float(front_distance) >= max(45.0, CONFIG.safety.front_stop_distance_cm + 20)
-        add("ultrasonic_ready", bool(sensors_now.get("ultrasonic_ready")), "front range needed before floor movement")
+        add("ultrasonic_ready", front_distance is not None, "front range needed before floor movement")
         add("front_clear", front_clear, "front must be clear for tiny floor step")
     else:
         add("mode_valid", False, "mode must be presence, boot, safe, floor, or floor-cautious")
@@ -2718,6 +2722,13 @@ async def reactive_explore_task(command: ReactiveExploreCommand) -> dict:
             break
         sensors_now = body.sensors()
         distance = sensors_now.get("front_distance_cm")
+        # The HC-SR04 drops single pings constantly (worse just after a turret/motor
+        # move). A single None used to be read as "range unknown" -> scan+turn, so
+        # with a noisy sensor Pip would scan->turn->scan->turn forever and never
+        # commit to a crawl. Recover a real range with a noise-resistant median read
+        # (same trick the reflex already uses) before declaring the front unknown.
+        if distance is None:
+            distance = body.front_distance_median()
         distance_value = float(distance) if distance is not None else None
         plan.append({"kind": "sense", "cycle": cycle + 1, "front_distance_cm": distance_value, "sensors": {"errors": sensors_now.get("errors"), "battery_percent": sensors_now.get("battery_percent")}})
 
