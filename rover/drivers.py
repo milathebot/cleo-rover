@@ -245,6 +245,14 @@ class RoverBody:
             sensors.get("front_distance_cm"), self._last_good_front_cm, self._last_good_front_at, now, self._range_hold_s
         )
         if blind:
+            # Last resort before declaring blind: a deliberate MEDIAN read rejects the
+            # single-ping garbage the fast snapshot returns under motor noise (and seeds
+            # the cache so subsequent brief dropouts ride the hold window instead).
+            fallback = self.front_distance_median(samples=3)
+            if fallback is not None:
+                resolved, blind = fallback, False
+                self._last_good_front_cm, self._last_good_front_at = fallback, time.time()
+        if blind:
             blind_ms = (now - self._last_good_front_at) * 1000 if self._last_good_front_cm is not None else -1.0
             self.state.last_reflex_stop = {
                 "reason": (f"front range blind for {blind_ms:.0f}ms (> {self._range_hold_s*1000:.0f}ms); failing closed"
