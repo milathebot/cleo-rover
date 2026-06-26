@@ -17,7 +17,7 @@ def test_health():
 def test_operator_panel():
     r = client.get("/")
     assert r.status_code == 200
-    assert "Cleo Rover Mk1" in r.text
+    assert "CLEO ROVER MK1" in r.text
     assert "/expression/preview.png" in r.text
 
 
