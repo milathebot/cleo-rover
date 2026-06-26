@@ -448,7 +448,7 @@ class RoverBody:
                 "armed": self.motors_armed,
                 "max_duty_cycle": self.config.motors.max_duty_cycle,
                 "last_wheel_duty": drive_to_wheel_duty(
-                    self.state.last_drive, self.config.motors.max_duty_cycle
+                    self.state.last_drive, self.config.motors.max_duty_cycle, self.config.motors.min_inplace_turn
                 ).as_dict()
                 if self.state.last_drive
                 else None,

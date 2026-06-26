@@ -86,18 +86,25 @@ def _duty_close(a: "WheelDuty", b: "WheelDuty", *, tol: int = 40) -> bool:
     )
 
 
-def drive_to_wheel_duty(command: DriveCommand, max_duty_cycle: float = 0.55) -> WheelDuty:
+def drive_to_wheel_duty(command: DriveCommand, max_duty_cycle: float = 0.55, min_inplace_turn: float = 0.0) -> WheelDuty:
     """Convert normalized linear/turn command to Freenove 4-wheel duties.
 
     Positive linear means forward. Positive turn means turn right. The output
     mirrors Freenove's ordinary-wheel examples: forward is all wheels positive,
     left turn is left wheels negative/right wheels positive, and right turn is
     the inverse. Duties are capped conservatively by config.
+
+    min_inplace_turn (>0) floors a PURE in-place turn (|linear|~0) to at least that
+    magnitude, because a 4WD scrub-turn stalls/buzzes at small duties. Arc-steering
+    while moving (|linear|>0) is left untouched so it stays gentle.
     """
 
     max_pwm = int(PCA9685_MAX_DUTY * clamp(max_duty_cycle, 0.0, 1.0))
-    left = clamp(command.linear + command.turn, -1.0, 1.0)
-    right = clamp(command.linear - command.turn, -1.0, 1.0)
+    turn = command.turn
+    if min_inplace_turn > 0 and abs(command.linear) < 0.05 and turn != 0 and abs(turn) < min_inplace_turn:
+        turn = min_inplace_turn if turn > 0 else -min_inplace_turn
+    left = clamp(command.linear + turn, -1.0, 1.0)
+    right = clamp(command.linear - turn, -1.0, 1.0)
     return WheelDuty(
         left_upper=int(left * max_pwm),
         left_lower=int(left * max_pwm),
@@ -219,7 +226,7 @@ class FreenoveHardware:
         return target
 
     def drive(self, command: DriveCommand) -> WheelDuty:
-        duty = drive_to_wheel_duty(command, self.config.motors.max_duty_cycle)
+        duty = drive_to_wheel_duty(command, self.config.motors.max_duty_cycle, self.config.motors.min_inplace_turn)
         return self._ramp_to(duty, ramp_ms=90, steps=5)
 
     def stop(self) -> None:

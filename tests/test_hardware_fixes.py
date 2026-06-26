@@ -63,6 +63,21 @@ def test_pan_trim_offsets_physical_pulse_only():
     assert captured[ch] == pan_pulse_us(0)
 
 
+def test_inplace_turn_boosted_to_floor_but_arc_steering_untouched():
+    from rover.models import DriveCommand
+    # a weak in-place turn is floored to min_inplace_turn so the 4WD actually rotates
+    weak = drive_to_wheel_duty(DriveCommand(linear=0.0, turn=0.16, duration_ms=180), 0.45, min_inplace_turn=1.0)
+    full = drive_to_wheel_duty(DriveCommand(linear=0.0, turn=1.0, duration_ms=180), 0.45)
+    assert weak.left_upper == full.left_upper and weak.right_upper == full.right_upper
+    assert weak.left_upper > 0 and weak.right_upper < 0          # opposite -> rotation in place
+    # arc steering WHILE MOVING is not boosted (stays a gentle differential)
+    arc = drive_to_wheel_duty(DriveCommand(linear=0.4, turn=0.16, duration_ms=180), 0.45, min_inplace_turn=1.0)
+    assert arc.left_upper != full.left_upper and arc.left_upper > arc.right_upper > 0
+    # floor disabled (0.0) keeps the old behavior
+    raw = drive_to_wheel_duty(DriveCommand(linear=0.0, turn=0.16, duration_ms=180), 0.45)
+    assert raw.left_upper < full.left_upper
+
+
 def test_resolve_front_range_holds_through_dropouts():
     # The forward reflex must reuse a recent good range through brief HC-SR04 dropouts
     # under motor noise, and only fail CLOSED when blind longer than the hold window.

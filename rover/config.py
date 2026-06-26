@@ -34,6 +34,11 @@ class MotorConfig(BaseModel):
     right_in2_pin: int | None = None
     pwm_frequency_hz: int = 50
     max_duty_cycle: float = Field(default=0.35, ge=0.0, le=1.0)
+    # A 4WD scrub-turn in place needs real torque; tiny turn commands stall (buzz). When
+    # >0, a pure in-place turn (|linear|~0) is boosted to at least this magnitude so a
+    # commanded rotation actually rotates. Arc-steering while moving is untouched.
+    # Per-robot (measured on hardware).
+    min_inplace_turn: float = Field(default=0.0, ge=0.0, le=1.0)
     invert_left: bool = False
     invert_right: bool = False
 
