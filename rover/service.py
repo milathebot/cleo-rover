@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import os
 import re
 import time
@@ -108,6 +109,7 @@ DEFAULT_PIP_STATE = {
     "current_zone": "office",
     "last_greet_at": None,
     "last_patrol_at": None,
+    "patrol_count": 0,
     "last_observe_at": None,
     "last_rescue_at": None,
     "last_life_tick_at": None,
@@ -336,11 +338,31 @@ def _start_rgb_expression() -> None:
     _rgb_task_handle = asyncio.create_task(loop())
 
 
+def _log_autonomy_posture() -> None:
+    """One clear line at startup so it's never again a mystery why Pip is or isn't
+    self-driving (last run's 'why didn't it roam?' was simply arbiter_enabled=false)."""
+    lf, nav = CONFIG.life_loop, CONFIG.nav
+    log = logging.getLogger("cleo_rover")
+    if body.mode != "hardware":
+        log.info("autonomy posture: sim/test mode -- self-directed loops do not run.")
+        return
+    q = lf.quiet_hours
+    log.info(
+        "autonomy posture: arbiter=%s | heartbeat=%s | roam[vfh=%s mapping=%s wall_follow=%s] | quiet_hours=%s(%s-%s) -- %s",
+        "ON" if lf.arbiter_enabled else "OFF (flip life_loop.arbiter_enabled to let Pip self-drive)",
+        f"{lf.heartbeat_seconds}s" if (lf.enabled and lf.heartbeat_seconds) else "off",
+        nav.use_vfh_steering, nav.mapping_enabled, nav.wall_follow_enabled,
+        q.enabled, q.start, q.end,
+        "Pip will roam, act on curiosity, and hug walls on its own" if lf.arbiter_enabled else "Pip only moves when you drive it",
+    )
+
+
 async def start_body_watchdog() -> None:
     body.start_safety_watchdog()
     _start_life_heartbeat()
     _start_arbiter_loop()
     _start_rgb_expression()
+    _log_autonomy_posture()
 
 
 async def stop_body_watchdog() -> None:
@@ -529,6 +551,23 @@ def life_heartbeat_step() -> dict:
     if percent is not None:
         remember_event(RoverEvent(kind=RoverEventKind.battery, source="heartbeat", value=float(percent), payload={"percent": percent}))
     idle = remember_event(RoverEvent(kind=RoverEventKind.idle_tick, source="heartbeat", timestamp=time.time()))
+    # Boredom slowly rises while nothing interesting happens, so an undisturbed Pip
+    # eventually gets the itch to roam. THIS is what actually drives the arbiter's
+    # autonomous PATROL (arbiter.arbitrate fires patrol on boredom>=0.6 or curiosity
+    # >= threshold). A real stimulus (sound/motion/person) or a completed patrol
+    # resets the quiet clock / boredom so the urge ebbs and flows like a living thing.
+    awake = pip_state.get("mode") not in {"sleep", None}
+    quiet_for = time.time() - float(autonomy.state.last_stimulus_at or 0.0)
+    if awake and quiet_for > CONFIG.life_loop.boredom_quiet_seconds:
+        pip_state["boredom"] = min(1.0, float(pip_state.get("boredom", 0.0) or 0.0) + CONFIG.life_loop.boredom_growth_per_tick)
+    # Let the inner drive colour the mood so it's both visible (the RGB strip /
+    # expression) and causal (arbiter lowers the patrol bar when Pip feels
+    # curious/seeking). Only upgrade a neutral mood -- never override alert/tired/etc.
+    if awake and pip_state.get("mood") != "low_power" and autonomy.state.mood in {"calm", "watching", "listening", "curious"}:
+        if float(pip_state.get("boredom", 0.0) or 0.0) >= 0.6:
+            autonomy.state.mood = "seeking"
+        elif autonomy.state.curiosity >= 0.6:
+            autonomy.state.mood = "curious"
     if pip_state.get("mode") != "sleep" and pip_state.get("mood") != "low_power":
         pip_state["mood"] = autonomy.state.mood
     # Opportunistic memory consolidation while idle: distill episodic sightings
@@ -1062,6 +1101,10 @@ def voice_event(phase: str, text: str | None = None, score: float | None = None,
     elif p == "heard":
         _voice_state["listening"] = False
         record_voice_transcript(text)
+        # Feed the wake-loop's recognized speech into the event store so it reaches
+        # autonomy (curiosity spike), memory, and the diary -- not just the dashboard.
+        if text:
+            remember_event(RoverEvent(kind=RoverEventKind.speech, source="voice", label="heard", payload={"text": text}))
     elif p == "error":
         _voice_state["listening"] = False
         _voice_state["last_error"] = error
@@ -3733,6 +3776,8 @@ def arbiter_context() -> dict:
     # Edge/stairs: a recent downward-IR cliff reflex means hold + ask to be carried.
     rs = body.state.last_reflex_stop
     edge_detected = bool(rs and rs.get("kind") == "cliff" and (time.time() - float(rs.get("time") or 0.0)) < 25.0)
+    last_patrol = pip_state.get("last_patrol_at")
+    patrol_cooldown_active = bool(last_patrol and (time.time() - float(last_patrol)) < CONFIG.life_loop.patrol_min_gap_seconds)
     return {
         "mode": pip_state.get("mode"),
         "awake": pip_state.get("awake"),
@@ -3751,6 +3796,7 @@ def arbiter_context() -> dict:
         "quiet": quiet,
         "do_not_disturb": autonomy.state.do_not_disturb,
         "movement_allowed": movement_allowed,
+        "patrol_cooldown_active": patrol_cooldown_active,
         "dock_known": dock_known,
         "return_to_charger_min_battery": CONFIG.life_loop.return_to_charger_min_battery,
     }
@@ -3775,8 +3821,25 @@ async def arbiter_tick(*, allow_movement: bool = False) -> dict:
     elif behavior == arbiter.BEHAVIOR_SOCIALIZE:
         result = await behavior_socialize(allow_movement=move_ok, quiet=ctx["quiet"])
     elif behavior == arbiter.BEHAVIOR_PATROL:
-        loop = await little_being_loop(LittleBeingLoopCommand(zone=str(pip_state.get("current_zone") or "office"), allow_movement=move_ok, duration_seconds=30, explore_cycles=4 + round(autonomy.state.curiosity * 4), capture_vision=True, compact=True, mood=autonomy.state.mood))
-        result = {"summary": loop.get("summary")}
+        zone = str(pip_state.get("current_zone") or "office")
+        patrol_n = int(pip_state.get("patrol_count", 0) or 0)
+        # Mostly free-roam via the well-tested reactive explore (frontier-directed
+        # when mapping+VFH are on); every 3rd loop trace a wall when wall-following
+        # is enabled -- that's the "hugging walls" behaviour and the most reliable
+        # systematic room coverage we have without encoders/IMU.
+        if move_ok and CONFIG.nav.wall_follow_enabled and patrol_n % 3 == 2:
+            wf = await wall_follow_task(zone=zone, side="left", allow_movement=True, max_cycles=14, duration_seconds=30)
+            result = {"patrol": "wall_follow", "side": "left", "cycles": len(wf.get("plan", []))}
+        else:
+            loop = await little_being_loop(LittleBeingLoopCommand(zone=zone, allow_movement=move_ok, duration_seconds=30, explore_cycles=4 + round(autonomy.state.curiosity * 4), capture_vision=True, compact=True, mood=autonomy.state.mood))
+            result = {"patrol": "explore", "summary": loop.get("summary")}
+        # The itch is scratched: reset boredom and pull curiosity just under baseline
+        # so the urge has to rebuild over the next few minutes (the ebb and flow).
+        pip_state["last_patrol_at"] = time.time()
+        pip_state["patrol_count"] = patrol_n + 1
+        pip_state["boredom"] = 0.1
+        base = float(CONFIG.life_loop.personality.curiosity)
+        autonomy.state.curiosity = min(autonomy.state.curiosity, base * 0.9)
     elif behavior == arbiter.BEHAVIOR_REQUEST_ASSIST:
         result = await behavior_request_assist()
     elif behavior == arbiter.BEHAVIOR_HOLD:

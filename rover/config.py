@@ -327,6 +327,14 @@ class LifeLoopConfig(BaseModel):
     # loop. OFF by default; flip on (on hardware) for self-directed operation.
     arbiter_enabled: bool = False
     arbiter_interval_seconds: int = Field(default=15, ge=2, le=600)
+    # Autonomous-drive rhythm (the "living being" loop, all only active when the
+    # arbiter is enabled). Boredom grows once it's been quiet this long, by this much
+    # per heartbeat, until it crosses the arbiter's patrol bar -- then a patrol runs
+    # and boredom resets, so the urge to roam ebbs and flows. patrol_min_gap stops
+    # back-to-back loops from thrashing even when Pip is very curious.
+    boredom_quiet_seconds: float = Field(default=90.0, ge=0.0, le=3600.0)
+    boredom_growth_per_tick: float = Field(default=0.03, ge=0.0, le=0.5)
+    patrol_min_gap_seconds: float = Field(default=120.0, ge=0.0, le=3600.0)
     # Auto self-preservation: at/below this battery %, the arbiter heads for the
     # charger (return-to-landmark) instead of exploring; critically low still asks.
     return_to_charger_min_battery: float = Field(default=35.0, ge=5.0, le=80.0)

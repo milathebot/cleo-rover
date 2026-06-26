@@ -55,9 +55,22 @@ class AutonomyEngine:
         self.state.last_behavior = behavior
         self.state.last_decision_at = now
 
+    # Events that count as a real external stimulus (reset the "how long has it
+    # been quiet?" clock that boredom grows from). An idle tick is NOT a stimulus.
+    _STIMULUS_KINDS = {
+        RoverEventKind.sound,
+        RoverEventKind.speech,
+        RoverEventKind.wake_word,
+        RoverEventKind.motion,
+        RoverEventKind.camera_snapshot,
+        RoverEventKind.bump,
+        RoverEventKind.obstacle,
+    }
+
     def update_from_event(self, event: RoverEvent) -> None:
         now = event.timestamp or time.time()
-        self.state.last_stimulus_at = now
+        if event.kind in self._STIMULUS_KINDS:
+            self.state.last_stimulus_at = now
         if event.kind in {RoverEventKind.sound, RoverEventKind.speech, RoverEventKind.wake_word}:
             self.state.attention = min(1.0, self.state.attention + 0.18)
             self.state.curiosity = min(1.0, self.state.curiosity + 0.12)
@@ -84,7 +97,15 @@ class AutonomyEngine:
             self.state.mood = "manual"
         elif event.kind == RoverEventKind.idle_tick:
             self.state.attention = max(0.0, self.state.attention - 0.02)
-            self.state.curiosity = max(0.0, self.state.curiosity - 0.01)
+            # Curiosity relaxes toward its personality baseline -- NOT toward zero.
+            # An undisturbed Pip should stay gently curious (so it eventually wants
+            # to explore) instead of going inert after a few quiet minutes, which is
+            # what made autonomous patrol effectively unreachable before.
+            base = float(self.config.personality.curiosity)
+            if self.state.curiosity > base:
+                self.state.curiosity = max(base, self.state.curiosity - 0.01)
+            elif self.state.curiosity < base:
+                self.state.curiosity = min(base, self.state.curiosity + 0.005)
             # Do not erase persistent/low-energy moods (an idle tick right after a
             # low-battery event must not reset 'tired' back to 'calm').
             if self.state.mood not in {"charging", "disconnected", "manual", "tired", "low_power"} and self.state.energy >= 0.22:

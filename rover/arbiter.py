@@ -111,10 +111,12 @@ def arbitrate(ctx: dict) -> dict:
         patrol_threshold = 0.82
     elif mood in {"curious", "playful", "excited", "seeking"}:
         patrol_threshold = 0.55
-    if (
-        ctx.get("movement_allowed")
-        and (float(ctx.get("curiosity", 0.0) or 0.0) >= patrol_threshold or float(ctx.get("boredom", 0.0) or 0.0) >= 0.6)
-    ):
+    wants_to_roam = float(ctx.get("curiosity", 0.0) or 0.0) >= patrol_threshold or float(ctx.get("boredom", 0.0) or 0.0) >= 0.6
+    if ctx.get("movement_allowed") and wants_to_roam:
+        # Don't roam again right after a loop, even when very curious -- a living
+        # being explores, then settles to observe, then explores again.
+        if ctx.get("patrol_cooldown_active"):
+            return out(BEHAVIOR_OBSERVE, f"curious/bored ({mood or 'neutral'}) but just patrolled; observing between loops")
         return out(BEHAVIOR_PATROL, f"curious/bored ({mood or 'neutral'}) and free to move; patrolling")
 
     return out(BEHAVIOR_OBSERVE, "calm presence; observing")
