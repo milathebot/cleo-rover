@@ -236,54 +236,12 @@ class RoverBody:
             await self.stop()
             return True
         sensors = self._sensor_snapshot()
-        # Resolve the forward range tolerantly: the HC-SR04 emits intermittent garbage
-        # (dropped to None) under motor noise, which must NOT instantly blind the reflex
-        # (else Pip stops dead on a clear path mid-drive). Reuse a recent good reading
-        # through brief dropouts; only fail CLOSED when blind longer than _range_hold_s.
-        now = time.time()
-        resolved, blind, self._last_good_front_cm, self._last_good_front_at = resolve_front_range(
-            sensors.get("front_distance_cm"), self._last_good_front_cm, self._last_good_front_at, now, self._range_hold_s
-        )
-        if blind:
-            # Last resort before declaring blind: a deliberate MEDIAN read rejects the
-            # single-ping garbage the fast snapshot returns under motor noise (and seeds
-            # the cache so subsequent brief dropouts ride the hold window instead).
-            fallback = self.front_distance_median(samples=3)
-            if fallback is not None:
-                resolved, blind = fallback, False
-                self._last_good_front_cm, self._last_good_front_at = fallback, time.time()
-        if blind:
-            blind_ms = (now - self._last_good_front_at) * 1000 if self._last_good_front_cm is not None else -1.0
-            self.state.last_reflex_stop = {
-                "reason": (f"front range blind for {blind_ms:.0f}ms (> {self._range_hold_s*1000:.0f}ms); failing closed"
-                           if blind_ms >= 0 else "front range never read; failing closed"),
-                "kind": "range_unknown",
-                "front_distance_cm": None,
-                "threshold_cm": self._reflex_threshold_cm(),
-                "drive": command.model_dump(),
-                "source": source,
-                "time": now,
-            }
-            await self.stop()
-            return True
-        sensors["front_distance_cm"] = resolved
-        reflex, reason = should_reflex_stop(command, sensors, threshold_cm=self._reflex_threshold_cm())
-        kind = "ultrasonic"
-        if not reflex:
-            cliff, cliff_reason = should_cliff_stop(
-                sensors, enabled=self.config.safety.cliff_reflex_enabled, drop_value=self.config.safety.line_drop_value
-            )
-            if cliff:
-                reflex, reason, kind = True, cliff_reason, "cliff"
-        if not reflex:
-            bump, bump_reason = should_bump_stop(sensors, enabled=self.config.safety.bumper_reflex_enabled)
-            if bump:
-                reflex, reason, kind = True, bump_reason, "bumper"
-        if reflex:
+
+        async def _trip(kind: str, reason: str | None, front: Any) -> bool:
             self.state.last_reflex_stop = {
                 "reason": reason,
                 "kind": kind,
-                "front_distance_cm": sensors.get("front_distance_cm"),
+                "front_distance_cm": front,
                 "threshold_cm": self._reflex_threshold_cm(),
                 "drive": command.model_dump(),
                 "source": source,
@@ -291,6 +249,41 @@ class RoverBody:
             }
             await self.stop()
             return True
+
+        # Cliff + bump are independent of the forward range, so evaluate them FIRST --
+        # a blind/dropped sonar must never mask an edge or a contact stop.
+        cliff, cliff_reason = should_cliff_stop(
+            sensors, enabled=self.config.safety.cliff_reflex_enabled, drop_value=self.config.safety.line_drop_value
+        )
+        if cliff:
+            return await _trip("cliff", cliff_reason, sensors.get("front_distance_cm"))
+        bump, bump_reason = should_bump_stop(sensors, enabled=self.config.safety.bumper_reflex_enabled)
+        if bump:
+            return await _trip("bumper", bump_reason, sensors.get("front_distance_cm"))
+
+        # Resolve the forward range tolerantly: the HC-SR04 emits intermittent garbage
+        # (dropped to None) under motor noise, which must NOT instantly blind the reflex
+        # (else Pip stops dead on a clear path mid-drive). Reuse a recent good reading
+        # through brief dropouts; a deliberate median read rejects single-ping garbage;
+        # only fail CLOSED when truly blind (no good read within _range_hold_s + median None).
+        now = time.time()
+        resolved, blind, self._last_good_front_cm, self._last_good_front_at = resolve_front_range(
+            sensors.get("front_distance_cm"), self._last_good_front_cm, self._last_good_front_at, now, self._range_hold_s
+        )
+        if blind:
+            fallback = self.front_distance_median(samples=3)
+            if fallback is not None:
+                resolved, blind = fallback, False
+                self._last_good_front_cm, self._last_good_front_at = fallback, time.time()
+        if blind:
+            blind_ms = (now - self._last_good_front_at) * 1000 if self._last_good_front_cm is not None else -1.0
+            reason = (f"front range blind for {blind_ms:.0f}ms (> {self._range_hold_s*1000:.0f}ms); failing closed"
+                      if blind_ms >= 0 else "front range never read; failing closed")
+            return await _trip("range_unknown", reason, None)
+        sensors["front_distance_cm"] = resolved
+        reflex, reason = should_reflex_stop(command, sensors, threshold_cm=self._reflex_threshold_cm())
+        if reflex:
+            return await _trip("ultrasonic", reason, sensors.get("front_distance_cm"))
         return False
 
     def start_safety_watchdog(self) -> None:
