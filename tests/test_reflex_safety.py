@@ -14,6 +14,30 @@ from rover.drivers import RoverBody, should_bump_stop, should_cliff_stop, should
 from rover.models import DriveCommand, TurretCommand
 
 
+def test_range_hold_window_is_config_driven():
+    # The HC-SR04 dropout-tolerance window is no longer a hardcoded 0.25s.
+    default_body = RoverBody(mode="sim", config=RoverConfig())
+    assert abs(default_body._range_hold_s - 0.25) < 1e-9
+    cfg = RoverConfig.model_validate({"safety": {"range_hold_ms": 350}})
+    assert abs(RoverBody(mode="sim", config=cfg)._range_hold_s - 0.35) < 1e-9
+
+
+def test_watchdog_liveness_reported():
+    # Before the watchdog is started it must report not-alive (so health can flag a
+    # missing backstop) -- and readiness must surface the bit.
+    body = RoverBody(mode="sim", config=RoverConfig())
+    assert body.watchdog_alive() is False
+    assert body.readiness()["watchdog_alive"] is False
+
+    async def _start_then_check() -> bool:
+        body.start_safety_watchdog()
+        alive = body.watchdog_alive()
+        await body.stop_safety_watchdog()
+        return alive
+
+    assert asyncio.run(_start_then_check()) is True
+
+
 def test_cliff_and_bump_disabled_by_default():
     edge = {"line_sensors": {"left": 1, "center": 1, "right": 1}}
     pressed = {"bumpers": {"left": 1, "right": 0}}

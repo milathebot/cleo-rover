@@ -165,7 +165,7 @@ class RoverBody:
         # reuse a recent good reading instead of instantly blinding the reflex.
         self._last_good_front_cm: float | None = None
         self._last_good_front_at: float = 0.0
-        self._range_hold_s: float = 0.25
+        self._range_hold_s: float = float(getattr(self.config.safety, "range_hold_ms", 250)) / 1000.0
 
     def _reflex_threshold_cm(self) -> float:
         # Configurable hard emergency floor instead of the old hardcoded max(45,...)
@@ -295,20 +295,37 @@ class RoverBody:
         async def watchdog() -> None:
             while True:
                 await asyncio.sleep(0.03)
-                command = self.state.last_drive
-                if self.state.stopped or command is None:
-                    continue
-                # Liveness backstop: if a drive should have ended (its pulse + slack)
-                # but the rover is still marked moving, force-stop. Catches a stalled
-                # or cancelled drive_monitor so motion can never run away.
-                if self.state.last_drive_at is not None and time.time() > self.state.last_drive_at + command.duration_ms / 1000.0 + slack_s:
-                    await self.stop()
-                    continue
-                if command.linear <= 0:
-                    continue
-                await self._check_forward_reflex(command, source="persistent_watchdog")
+                try:
+                    command = self.state.last_drive
+                    if self.state.stopped or command is None:
+                        continue
+                    # Liveness backstop: if a drive should have ended (its pulse + slack)
+                    # but the rover is still marked moving, force-stop. Catches a stalled
+                    # or cancelled drive_monitor so motion can never run away.
+                    if self.state.last_drive_at is not None and time.time() > self.state.last_drive_at + command.duration_ms / 1000.0 + slack_s:
+                        await self.stop()
+                        continue
+                    if command.linear <= 0:
+                        continue
+                    await self._check_forward_reflex(command, source="persistent_watchdog")
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # A transient sensor/reflex error must NEVER kill the liveness
+                    # backstop -- that would let a later drive run away unmonitored.
+                    # Fail safe: stop, then keep watching.
+                    try:
+                        await self.stop()
+                    except Exception:
+                        pass
 
         self._watchdog_task = asyncio.create_task(watchdog())
+
+    def watchdog_alive(self) -> bool:
+        """Is the persistent motion-liveness watchdog actually running? Surfaced in
+        readiness/health so an operator can see the backstop is up before sending
+        Pip into unsupervised autonomy."""
+        return bool(self._watchdog_task and not self._watchdog_task.done())
 
     async def stop_safety_watchdog(self) -> None:
         if self._watchdog_task and not self._watchdog_task.done():
@@ -375,6 +392,7 @@ class RoverBody:
             "display_ready": self.display_ready,
             "motors_armed": self.motors_armed,
             "bench_safe_no_motors": self.config.safety.bench_safe_no_motors,
+            "watchdog_alive": self.watchdog_alive(),
         }
 
     def sensors(self) -> dict[str, Any]:

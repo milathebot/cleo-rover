@@ -108,6 +108,11 @@ class SafetyConfig(BaseModel):
     # Liveness backstop: the persistent watchdog force-stops a drive that should
     # have ended (its pulse + this slack) but didn't (e.g. a stalled drive monitor).
     motion_deadline_slack_ms: int = Field(default=400, ge=50, le=3000)
+    # How long a recent good front-range read is reused when the HC-SR04 drops out
+    # (common right after a turret move, under motor noise). Below this the reflex
+    # tolerates the dropout; beyond it (with no median re-read) it fails CLOSED.
+    # Raise toward 350ms if scans cause stutter-stops; lower for snappier blinding.
+    range_hold_ms: int = Field(default=250, ge=50, le=1500)
     # Thermal back-off (fanless Pi running autonomy for hours). cpu_temp from doctor.
     thermal_warn_c: float = Field(default=75.0, ge=50.0, le=90.0)
     thermal_hard_c: float = Field(default=82.0, ge=55.0, le=95.0)

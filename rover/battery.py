@@ -106,6 +106,29 @@ class BatteryEstimator:
         self._low_run = 0
         self._charging = False
 
+    def snapshot(self) -> dict[str, float | int | bool | None]:
+        """Serialize the estimator's evolving state so a reboot doesn't reset the
+        critical-trip debounce (a frequent power-cycle could otherwise keep
+        delaying the low-battery trip and over-discharge the pack -- audit REL-4)."""
+        return {
+            "ema_soc": self._ema_soc,
+            "last_idle_v": self._last_idle_v,
+            "ema_idle_v": self._ema_idle_v,
+            "rise_run": self._rise_run,
+            "low_run": self._low_run,
+            "charging": self._charging,
+        }
+
+    def restore(self, data: dict | None) -> None:
+        if not data:
+            return
+        self._ema_soc = data.get("ema_soc", self._ema_soc)
+        self._last_idle_v = data.get("last_idle_v", self._last_idle_v)
+        self._ema_idle_v = data.get("ema_idle_v", self._ema_idle_v)
+        self._rise_run = int(data.get("rise_run", self._rise_run) or 0)
+        self._low_run = int(data.get("low_run", self._low_run) or 0)
+        self._charging = bool(data.get("charging", self._charging))
+
     def update(self, *, voltage: float | None, motors_active: bool, duty: float = 0.0) -> BatteryReading:
         if voltage is None:
             # Don't advance debounce on a missing read; report unknown.

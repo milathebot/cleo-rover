@@ -10,6 +10,30 @@ from rover.battery import (
 )
 
 
+def test_estimator_snapshot_restore_preserves_critical_debounce():
+    # The debounced critical trip must survive a reboot: a power cycle mid-debounce
+    # cannot reset the low-run counter and keep delaying self-preservation (REL-4).
+    est = BatteryEstimator(low_debounce=3)
+    r = None
+    for _ in range(2):  # two idle samples below the 6.6V trip -> low_run=2, not yet critical
+        r = est.update(voltage=6.5, motors_active=False)
+    assert r.critical is False
+    snap = est.snapshot()
+    assert snap["low_run"] == 2
+
+    rebooted = BatteryEstimator(low_debounce=3)
+    rebooted.restore(snap)
+    # The 3rd low idle sample now trips, because the counter was restored (not reset).
+    assert rebooted.update(voltage=6.5, motors_active=False).critical is True
+
+
+def test_estimator_restore_ignores_empty():
+    est = BatteryEstimator()
+    est.restore(None)
+    est.restore({})  # must not crash or corrupt state
+    assert est.snapshot()["low_run"] == 0
+
+
 def test_adc_pair_is_version_bound():
     assert adc_pair(2) == (5.2, 2.0)
     assert adc_pair(1) == (3.3, 3.0)
