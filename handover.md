@@ -183,12 +183,28 @@ export CLEO_ROVER_HERMES_API_KEY=...
 export CLEO_ROVER_HERMES_MODEL=hermes-agent
 ```
 
-For the live `cleo-rover-body.service`, set these as a drop-in so they persist:
-`sudo systemctl edit cleo-rover-body` → add `Environment=CLEO_ROVER_HERMES_API_BASE=...`
-(etc.) → `sudo systemctl restart cleo-rover-body`.
+**Deployed pattern (recommended).** Both `cleo-rover-body` and the Telegram agent
+read a shared, root-only **`/etc/cleo-rover/hermes.env`** (each has a
+`EnvironmentFile=/etc/cleo-rover/hermes.env` drop-in). If your Hermes runs behind a
+`trycloudflare` quick-tunnel, its URL **rotates every launch** — so refreshing the
+endpoint is a one-file edit, not a hunt:
 
-`GET /mind/status` → `configured: true` when set. With nothing set, Pip runs fully
-offline on its deterministic policy (by design).
+```bash
+sudo tee /etc/cleo-rover/hermes.env >/dev/null <<'EOF'
+CLEO_ROVER_HERMES_API_BASE=https://<new-tunnel>/v1
+CLEO_ROVER_HERMES_API_KEY=<key>
+CLEO_ROVER_HERMES_MODEL=hermes-agent
+EOF
+sudo chmod 600 /etc/cleo-rover/hermes.env
+sudo systemctl restart cleo-rover-body cleo-rover-telegram-agent
+```
+
+(For a one-off / non-deployed run you can instead `sudo systemctl edit cleo-rover-body`
+and add the `Environment=` lines directly.)
+
+`GET /mind/status` → `configured: true` when set; confirm end-to-end with
+`POST /mind/step?zone=office` → expect `source: "mind"` (not `deterministic_fallback`).
+With nothing set, Pip runs fully offline on its deterministic policy (by design).
 
 ### 5.2 The intent contract (this is your whole motor vocabulary)
 When asked (`POST /mind/step?zone=<zone>`), the Pi sends you a world-state packet +
