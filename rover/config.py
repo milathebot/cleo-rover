@@ -56,6 +56,12 @@ class TurretConfig(BaseModel):
     # the reported pan_deg -- so a logical 0deg points dead ahead. Per-robot; measured
     # on hardware (calibration step 6). Negative = trim left.
     pan_trim_deg: float = 0.0
+    # Pan slew: ease the servo to a target in steps of <=pan_slew_deg (with a short
+    # settle each step) instead of snapping. A hard wide-angle jump slams the servo
+    # and vibrates the pan-mount screws loose. 0 = snap (old behavior). Mirrors the
+    # wheel _ramp_to that smoothed body motion.
+    pan_slew_deg: float = Field(default=12.0, ge=0.0, le=90.0)
+    pan_slew_settle_ms: float = Field(default=15.0, ge=0.0, le=200.0)
 
 
 class SensorConfig(BaseModel):

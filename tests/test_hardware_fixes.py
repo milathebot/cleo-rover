@@ -33,6 +33,44 @@ def test_drive_to_wheel_duty_forward_all_positive():
     assert duty.left_upper == duty.left_lower  # both left wheels equal going straight
 
 
+def test_turret_pan_slews_instead_of_snapping():
+    # A hard wide-angle jump slams the servo and vibrates the pan-mount screws loose;
+    # the pan should ease to target in multiple steps, landing exactly on target.
+    from rover.config import RoverConfig
+    from rover.freenove import FreenoveHardware, pan_pulse_us
+    from rover.models import TurretCommand
+
+    calls: list = []
+
+    class FakePWM:
+        def set_servo_pulse_us(self, channel: int, us: int) -> None:
+            calls.append((channel, us))
+
+    body = object.__new__(FreenoveHardware)
+    cfg = RoverConfig()
+    cfg.turret.pan_trim_deg = 0.0
+    cfg.turret.pan_slew_deg = 12.0
+    cfg.turret.pan_slew_settle_ms = 0.0  # no real sleeps in the test
+    body.config = cfg
+    body.pwm = FakePWM()
+    body.last_pan_deg = 0.0
+    ch = cfg.turret.pan_channel
+
+    body.set_turret(TurretCommand(pan_deg=70))      # wide span -> eased steps
+    assert len(calls) > 1
+    assert calls[-1] == (ch, pan_pulse_us(70))      # lands exactly on target
+    assert body.last_pan_deg == 70
+
+    calls.clear()
+    body.set_turret(TurretCommand(pan_deg=75))      # span 5 <= step -> single write
+    assert calls == [(ch, pan_pulse_us(75))]
+
+    calls.clear()
+    cfg.turret.pan_slew_deg = 0.0                    # disabled -> snap (old behavior)
+    body.set_turret(TurretCommand(pan_deg=-70))
+    assert calls == [(ch, pan_pulse_us(-70))]
+
+
 def test_pan_trim_offsets_physical_pulse_only():
     # pan_trim_deg shifts the physical servo pulse so logical 0deg points dead ahead,
     # without changing the reported/logical pan_deg the safety layers reason about.

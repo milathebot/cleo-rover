@@ -174,6 +174,7 @@ class FreenoveHardware:
         self.pwm = PCA9685Bus(address=int(config.motors.i2c_address, 16))
         self.pwm.set_pwm_freq(config.motors.pwm_frequency_hz)
         self.last_wheel_duty = WheelDuty(0, 0, 0, 0)
+        self.last_pan_deg = 0.0
         self.stop()
 
     def _set_wheel(self, wheel: str, duty: int) -> None:
@@ -241,8 +242,25 @@ class FreenoveHardware:
         # pan_trim_deg corrects the mechanical center so a logical 0deg points dead
         # ahead; the trim affects ONLY the physical pulse, not the reported pan_deg, so
         # the bearing guard / cruise / VFH keep reasoning in logical degrees.
-        physical_pan = command.pan_deg + self.config.turret.pan_trim_deg
-        self.pwm.set_servo_pulse_us(self.config.turret.pan_channel, pan_pulse_us(physical_pan))
+        #
+        # Slew to the target in small eased steps instead of snapping: a hard wide
+        # jump slams the servo and vibrates the pan-mount screws loose (Noot's nut
+        # backed out). Same idea as the wheel _ramp_to that smoothed body motion.
+        trim = self.config.turret.pan_trim_deg
+        target = command.pan_deg
+        start = getattr(self, "last_pan_deg", 0.0)
+        step_deg = float(getattr(self.config.turret, "pan_slew_deg", 0.0) or 0.0)
+        span = abs(target - start)
+        if step_deg > 0 and span > step_deg:
+            steps = min(12, max(1, int(span / step_deg)))
+            settle = max(0.0, float(getattr(self.config.turret, "pan_slew_settle_ms", 0.0)) / 1000.0)
+            for index in range(1, steps + 1):
+                inter = start + (target - start) * (index / steps)
+                self.pwm.set_servo_pulse_us(self.config.turret.pan_channel, pan_pulse_us(inter + trim))
+                if settle:
+                    time.sleep(settle)
+        self.pwm.set_servo_pulse_us(self.config.turret.pan_channel, pan_pulse_us(target + trim))
+        self.last_pan_deg = target
 
     def close(self) -> None:
         self.stop()
