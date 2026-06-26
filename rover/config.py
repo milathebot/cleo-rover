@@ -47,6 +47,10 @@ class TurretConfig(BaseModel):
     pan_max_deg: float = 70
     tilt_min_deg: float = -35
     tilt_max_deg: float = 45
+    # Mechanical pan-center trim (degrees), added to the PHYSICAL pulse only -- NOT to
+    # the reported pan_deg -- so a logical 0deg points dead ahead. Per-robot; measured
+    # on hardware (calibration step 6). Negative = trim left.
+    pan_trim_deg: float = 0.0
 
 
 class SensorConfig(BaseModel):

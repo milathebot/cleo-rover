@@ -31,3 +31,33 @@ def test_drive_to_wheel_duty_forward_all_positive():
     duty = drive_to_wheel_duty(__import__("rover.models", fromlist=["DriveCommand"]).DriveCommand(linear=0.5, turn=0.0, duration_ms=200), 0.45)
     assert duty.left_upper > 0 and duty.right_upper > 0
     assert duty.left_upper == duty.left_lower  # both left wheels equal going straight
+
+
+def test_pan_trim_offsets_physical_pulse_only():
+    # pan_trim_deg shifts the physical servo pulse so logical 0deg points dead ahead,
+    # without changing the reported/logical pan_deg the safety layers reason about.
+    from rover.config import RoverConfig
+    from rover.freenove import FreenoveBody
+    from rover.models import TurretCommand
+
+    captured: dict[int, int] = {}
+
+    class FakePWM:
+        def set_servo_pulse_us(self, channel: int, us: int) -> None:
+            captured[channel] = us
+
+    body = object.__new__(FreenoveBody)  # bypass hardware __init__
+    cfg = RoverConfig()
+    cfg.turret.pan_trim_deg = -16.0
+    body.config = cfg
+    body.pwm = FakePWM()
+
+    ch = cfg.turret.pan_channel
+    body.set_turret(TurretCommand(pan_deg=0))
+    assert captured[ch] == pan_pulse_us(-16)   # logical 0 -> physical -16
+    body.set_turret(TurretCommand(pan_deg=20))
+    assert captured[ch] == pan_pulse_us(4)     # 20 + (-16)
+
+    cfg.turret.pan_trim_deg = 0.0              # no trim => identity
+    body.set_turret(TurretCommand(pan_deg=0))
+    assert captured[ch] == pan_pulse_us(0)

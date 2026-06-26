@@ -231,7 +231,11 @@ class FreenoveHardware:
     def set_turret(self, command: TurretCommand) -> None:
         # Pan uses the INVERTED FNK0043 formula (see pan_pulse_us); the old non-
         # inverted form mirrored every pan, flipping the world model VFH/cruise act on.
-        self.pwm.set_servo_pulse_us(self.config.turret.pan_channel, pan_pulse_us(command.pan_deg))
+        # pan_trim_deg corrects the mechanical center so a logical 0deg points dead
+        # ahead; the trim affects ONLY the physical pulse, not the reported pan_deg, so
+        # the bearing guard / cruise / VFH keep reasoning in logical degrees.
+        physical_pan = command.pan_deg + self.config.turret.pan_trim_deg
+        self.pwm.set_servo_pulse_us(self.config.turret.pan_channel, pan_pulse_us(physical_pan))
 
     def close(self) -> None:
         self.stop()
