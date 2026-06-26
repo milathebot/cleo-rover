@@ -205,8 +205,13 @@ button.dis{opacity:.32; pointer-events:none; filter:grayscale(.7)}
       </div>
     </div>
 
-    <!-- CENTER: sensors + telemetry -->
+    <!-- CENTER: camera + sensors + telemetry -->
     <div>
+      <div class='panel'>
+        <h2><span class='mk'>//</span> Camera <button id='cambtn' onclick='toggleCam()' style='margin-left:auto;padding:3px 10px;font-size:11px'>📷 start</button></h2>
+        <img id='camfeed' style='width:100%;border-radius:10px;border:1px solid rgba(0,229,255,.3);display:none' onerror="$('camnote').textContent='feed error — camera busy or off; retry'"/>
+        <div class='cmdresp' id='camnote'>live feed off · exclusive (one viewer) · turn on to drive Pip remotely</div>
+      </div>
       <div class='panel'>
         <h2><span class='mk'>//</span> Forward range</h2>
         <div class='range'><div class='stop' id='rstop'></div><div class='needle' id='rneedle'></div><div class='lab' id='rlab'>— cm</div></div>
@@ -380,6 +385,10 @@ async function cmd(){ const el=$('cmdin'); const t=(el.value||'').trim(); if(!t)
     const r=await j('/pip/command',{method:'POST',body:JSON.stringify({text:t,source:'console',allow_movement:false})}); const say=r.say||r.reply||r.speech||r.note||''; $('cmdresp').innerHTML=`<b>${r.action||(r.handled?'ok':'?')}</b> ${esc(String(say).slice(0,240))}`; el.value='';
   }catch(e){ $('cmdresp').textContent='command failed'; } slow(); }
 async function sayHi(){ $('cmdresp').textContent='…'; try{ await j('/speech/say?text='+encodeURIComponent('Good evening! Pip rolled all the way down the hall to say hello.'),{method:'POST'}); $('cmdresp').innerHTML='<b>spoke</b> hello 👋'; }catch(e){ $('cmdresp').textContent='say failed'; } }
+let camOn=false;
+function toggleCam(){ camOn=!camOn; const img=$('camfeed'),btn=$('cambtn'),note=$('camnote');
+  if(camOn){ img.src='/camera/stream.mjpg?ts='+Date.now(); img.style.display='block'; btn.textContent='📷 stop'; note.textContent='live feed ON — drive with the manual buttons below/right'; }
+  else { img.src=''; img.style.display='none'; btn.textContent='📷 start'; note.textContent='live feed off · exclusive (one viewer) · turn on to drive Pip remotely'; } }
 function tickClock(){ $('clock').textContent=new Date().toLocaleTimeString(); }
 async function live(on){ try{await j('/pip/live?on='+on,{method:'POST'});}catch(e){} fast(); }
 async function tick(){ try{await j('/pip/arbiter/tick?allow_movement=false',{method:'POST'});}catch(e){} fast(); }

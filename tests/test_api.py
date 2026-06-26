@@ -21,6 +21,12 @@ def test_operator_panel():
     assert "/expression/preview.png" in r.text
 
 
+def test_camera_stream_is_hardware_only():
+    # In sim there's no camera; the MJPEG endpoint must refuse cleanly (not 500).
+    r = client.get("/camera/stream.mjpg")
+    assert r.status_code == 503
+
+
 def test_alive_is_cheap_and_ok():
     data = client.get("/alive").json()
     assert data["ok"] is True

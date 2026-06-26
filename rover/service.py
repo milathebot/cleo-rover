@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 from .autonomy import AutonomyEngine, EventStore
 from .awareness import capture_motion_pair, cpu_temp_c, doctor_report, last_seen_summary, prune_capture_dir, range_state_from_samples
@@ -814,6 +814,66 @@ async def expression(command: ExpressionCommand) -> dict:
 def expression_preview() -> Response:
     frame = render_expression(body.state.expression)
     return Response(content=frame.png_bytes(), media_type="image/png")
+
+
+# A single live MJPEG stream from the Pi camera (rpicam-vid). On-demand only -- the
+# camera is exclusive, so the dashboard opens it only while the operator toggles it
+# on (e.g. to teleop Pip into another room). A new viewer terminates the old stream.
+_camera_proc: Any = None
+
+
+@app.get("/camera/stream.mjpg")
+async def camera_stream(width: int = 640, height: int = 480, fps: int = 10) -> Response:
+    """Live MJPEG feed for driving Pip remotely. Hardware-only; exclusive (one viewer)."""
+    global _camera_proc
+    import shutil as _sh
+
+    if body.mode != "hardware":
+        return Response("camera stream is hardware-only", media_type="text/plain", status_code=503)
+    if not _sh.which("rpicam-vid"):
+        return Response("rpicam-vid not installed", media_type="text/plain", status_code=503)
+    width = max(160, min(1280, int(width)))
+    height = max(120, min(960, int(height)))
+    fps = max(2, min(20, int(fps)))
+
+    # A previous stream holds the camera exclusively: stop it so the newest viewer wins.
+    if _camera_proc is not None and _camera_proc.returncode is None:
+        try:
+            _camera_proc.terminate()
+        except Exception:
+            pass
+
+    async def gen():
+        global _camera_proc
+        proc = await asyncio.create_subprocess_exec(
+            "rpicam-vid", "-n", "-t", "0", "--width", str(width), "--height", str(height),
+            "--framerate", str(fps), "--codec", "mjpeg", "--inline", "-o", "-",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        _camera_proc = proc
+        buf = b""
+        try:
+            while True:
+                chunk = await proc.stdout.read(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                # Emit each complete JPEG (SOI ff d8 .. EOI ff d9) as a multipart part.
+                while True:
+                    soi = buf.find(b"\xff\xd8")
+                    eoi = buf.find(b"\xff\xd9", soi + 2) if soi != -1 else -1
+                    if soi == -1 or eoi == -1:
+                        break
+                    frame = buf[soi:eoi + 2]
+                    buf = buf[eoi + 2:]
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
+        finally:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
 @app.post("/turret")
