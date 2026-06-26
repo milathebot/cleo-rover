@@ -2916,7 +2916,10 @@ async def little_being_loop(command: LittleBeingLoopCommand) -> dict:
             crawl_linear=0.34,
             crawl_duration_ms=220,
             decision_pause_ms=100,
-            front_clear_cm=130.0,
+            # Bolder: crawl whenever there's >=85cm clear ahead (was 130) so Pip
+            # advances in a normal cluttered room instead of mostly turning. Still
+            # well above the stop/emergency/reflex floors (55/30/30cm).
+            front_clear_cm=85.0,
             front_stop_cm=55.0,
             front_emergency_cm=30.0,
             reverse_on_blocked=True,
