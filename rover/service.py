@@ -158,6 +158,23 @@ def set_last_topo_node(node_id: str | None) -> None:
     global _last_topo_node
     _last_topo_node = node_id
     store.save_json("last_topo_node", node_id)
+
+
+def sync_current_zone_to_place(node_id: str | None) -> str | None:
+    """Snap pip_state["current_zone"] to a recognised place's name, so Pip actually
+    KNOWS which room it's in as it roams (the topo graph relocalises per place; this
+    bridges that to the zone label used for sightings/memory/movement-permission).
+
+    Only a place with a real, taught name (not the bare auto-id "place-N") moves the
+    zone -- an anonymous new place leaves the current label alone. Returns the zone
+    in effect after the call."""
+    if not node_id:
+        return pip_state.get("current_zone")
+    node = TOPO.nodes.get(node_id)
+    if node and node.name and not node.name.startswith("place-") and node.name != pip_state.get("current_zone"):
+        pip_state["current_zone"] = node.name
+        save_pip_runtime()
+    return pip_state.get("current_zone")
 # Continuous-motion ("cruise") singletons. Tasks only auto-start on hardware with
 # nav.continuous_motion_enabled; the dry-run endpoint works anywhere.
 CRUISE_PARAMS = cruise_mod.cruise_params_from(CONFIG.nav, CONFIG.odometry, CONFIG.safety)
@@ -348,12 +365,12 @@ def _log_autonomy_posture() -> None:
         return
     q = lf.quiet_hours
     log.info(
-        "autonomy posture: arbiter=%s | heartbeat=%s | roam[vfh=%s mapping=%s wall_follow=%s] | quiet_hours=%s(%s-%s) -- %s",
+        "autonomy posture: arbiter=%s | heartbeat=%s | roam[vfh=%s mapping=%s wall_follow=%s room_to_room=%s] | quiet_hours=%s(%s-%s) -- %s",
         "ON" if lf.arbiter_enabled else "OFF (flip life_loop.arbiter_enabled to let Pip self-drive)",
         f"{lf.heartbeat_seconds}s" if (lf.enabled and lf.heartbeat_seconds) else "off",
-        nav.use_vfh_steering, nav.mapping_enabled, nav.wall_follow_enabled,
+        nav.use_vfh_steering, nav.mapping_enabled, nav.wall_follow_enabled, nav.cross_zone_roam_enabled,
         q.enabled, q.start, q.end,
-        "Pip will roam, act on curiosity, and hug walls on its own" if lf.arbiter_enabled else "Pip only moves when you drive it",
+        "Pip will roam, act on curiosity, hug walls, and cross rooms on its own (keep the baby gate closed)" if lf.arbiter_enabled else "Pip only moves when you drive it",
     )
 
 
@@ -1270,6 +1287,31 @@ def map_memory_summary(limit: int = 500) -> dict:
     return {"ok": True, "summary": map_summary(items), "items": [item.model_dump() for item in items[:25]]}
 
 
+def zone_memory_summary(zone: str) -> dict:
+    """What Pip remembers about one room: its recent sightings + consolidated facts,
+    and a spoken one-liner. Powers place-aware recall ('what's in the kitchen')."""
+    z = str(zone or "").strip().lower()
+    items = [i for i in store.list_spatial(400) if (i.zone or "").lower() == z]
+    facts = [f for f in store.list_facts(200) if str(f.get("object", "")).lower() == z]
+    if not items and not facts:
+        return {"ok": True, "zone": z, "line": f"I don't have any memories of the {z} yet.", "items": [], "facts": []}
+    # Most-recent first; summarise the distinct things seen there.
+    items.sort(key=lambda i: i.last_seen_at or 0.0, reverse=True)
+    seen: list[str] = []
+    for i in items:
+        label = (i.label or i.kind or "").strip()
+        if label and label not in seen:
+            seen.append(label)
+    line = (f"In the {z} I remember " + ", ".join(seen[:4]) + ".") if seen else f"I've been to the {z} but didn't note much there."
+    return {"ok": True, "zone": z, "line": line, "items": [i.model_dump() for i in items[:20]], "facts": facts[:10]}
+
+
+@app.get("/map/zone/{zone}")
+def map_zone(zone: str) -> dict:
+    """Place-aware recall: everything Pip remembers about one room."""
+    return zone_memory_summary(zone)
+
+
 @app.get("/situation")
 def situation() -> dict:
     sensors_now = body.sensors()
@@ -1784,7 +1826,10 @@ def pip_can_autonomously_move(*, allow_movement: bool, battery: dict) -> tuple[b
         return False, "Pip is sleeping"
     if pip_state["mode"] == "quiet":
         return False, "Pip is quiet; observation only"
-    if pip_state.get("current_zone") not in pip_identity["approved_zones"]:
+    # Soft zone-permission gate. With room-to-room roaming enabled the gate is
+    # lifted (Pip may roam any room); physical safety is the closed baby gate at the
+    # stairs + the authoritative downward cliff reflex, NOT this label check.
+    if not CONFIG.nav.cross_zone_roam_enabled and pip_state.get("current_zone") not in pip_identity["approved_zones"]:
         return False, "current zone is not approved"
     if battery["recommendation"] == "charge_before_movement":
         return False, "battery says charge before movement"
@@ -1988,8 +2033,52 @@ def parse_destination_wish(text: str) -> str | None:
 
 def destination_requires_help(destination: str) -> bool:
     outdoor_words = {"yard", "backyard", "back yard", "outside", "outdoors", "garden", "garage", "driveway", "porch", "deck"}
+    # Stairs/level-changes ALWAYS need a human, even with room-to-room roaming on --
+    # the baby gate + cliff reflex stop Pip but it must never try to drive there.
+    stair_words = {"stairs", "downstairs", "upstairs", "basement", "down the stairs"}
     room_transition_words = {"hall", "hallway", "kitchen", "bedroom", "living room", "bathroom", "door"}
-    return any(word in destination for word in outdoor_words | room_transition_words)
+    d = destination.lower()
+    if any(word in d for word in outdoor_words | stair_words):
+        return True
+    if CONFIG.nav.cross_zone_roam_enabled:
+        return False  # within-floor room-to-room is allowed; gate + cliff are the safety
+    return any(word in d for word in room_transition_words)
+
+
+def parse_place_label(text: str) -> str | None:
+    """Pull a room name out of a teaching phrase ('this room is the kitchen',
+    'remember this place as the office', 'you are in the hallway'). Deliberately
+    requires an explicit place keyword so ordinary chat won't rename a room."""
+    patterns = [
+        r"\bthis (?:room|place|spot|area) is (?:the |my |our )?(?P<name>[a-z0-9 ]{2,40})",
+        r"\b(?:remember|name|call|mark|label) this (?:room|place|spot|area)?\s*(?:as )?(?:the )?(?P<name>[a-z0-9 ]{2,40})",
+        r"\byou(?:'re| are) (?:now )?(?:in|at) (?:the |my |our )?(?P<name>[a-z0-9 ]{2,40})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text.lower())
+        if match:
+            name = re.sub(r"\s+", " ", match.group("name")).strip(" .?!")
+            name = re.sub(r"\b(now|please|ok|okay|pip)\b", "", name).strip(" .?!")
+            if name and name not in {"you", "here", "pip", "the", "room", "place"}:
+                return name[:40]
+    return None
+
+
+def parse_zone_query(text: str) -> str | None:
+    """Pull a room name out of a recall question ('what's in the kitchen',
+    'what did you see in the office')."""
+    patterns = [
+        r"\bwhat(?:'s| is| did you see| have you seen| do you remember) (?:in|at|about|of) (?:the |my |our )?(?P<name>[a-z0-9 ]{2,40})",
+        r"\bwhat'?s in (?:the |my |our )?(?P<name>[a-z0-9 ]{2,40})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text.lower())
+        if match:
+            name = re.sub(r"\s+", " ", match.group("name")).strip(" .?!")
+            name = re.sub(r"\b(room|now|please|right now)\b", "", name).strip(" .?!")
+            if name and name not in {"you", "here", "pip", "the", "there"}:
+                return name[:40]
+    return None
 
 
 def pip_set_exploration_goal(destination: str, *, source: str) -> dict:
@@ -2043,6 +2132,14 @@ async def pip_command(command: PipCommand) -> dict:
         return {"ok": True, "handled": True, "action": "state", "state": pip_public_state()}
     if text in {"brain", "pip brain", "what are you doing", "pip what are you doing", "what do you want", "pip what do you want"}:
         return {"ok": True, "handled": True, "action": "brain", "brain": pip_brain_snapshot(compact=True)}
+    # Teach a room name ("this room is the kitchen") so Pip can navigate room-to-room.
+    place_label = parse_place_label(text)
+    if place_label:
+        res = await pip_place_name(place_label)
+        line = f"Okay, I'll remember this as the {place_label}." if res.get("ok") else "I couldn't save that place."
+        await pip_set_expression(ExpressionMode.curious, place_label[:8], 0.5)
+        speech = await asyncio.to_thread(speak_text, line)
+        return {"ok": True, "handled": True, "action": "name_place", "place": res, "line": line, "speech": speech}
     destination = parse_destination_wish(text)
     if destination:
         goal = pip_set_exploration_goal(destination, source=command.source)
@@ -2087,6 +2184,12 @@ async def pip_command(command: PipCommand) -> dict:
         await pip_set_expression(ExpressionMode.curious, "cats?", 0.55)
         speech = await asyncio.to_thread(speak_text, report)
         return {"ok": True, "handled": True, "action": "cat_report", "report": report, "sightings": sightings, "speech": speech}
+    zone_query = parse_zone_query(text)
+    if zone_query:
+        recall = zone_memory_summary(zone_query)
+        await pip_set_expression(ExpressionMode.curious, zone_query[:8], 0.5)
+        speech = await asyncio.to_thread(speak_text, recall["line"])
+        return {"ok": True, "handled": True, "action": "zone_recall", "recall": recall, "speech": speech}
     if text in {"tell me a joke", "joke", "pip joke", "say something funny", "make me laugh", "tell a joke"}:
         return await _say_with_mind(
             "Tell me a short, clean, family-friendly joke in one or two sentences.",
@@ -2724,6 +2827,7 @@ async def return_home_task(goal: str = "charger", allow_movement: bool = False, 
         result = state.on_observed(rec.node_id)
         if rec.node_id:
             set_last_topo_node(rec.node_id)
+            sync_current_zone_to_place(rec.node_id)
         log_steps.append({"hop": hops, "expected": state.expected_next, "observed": rec.node_id, "result": result, "status": state.status()})
         if result == "advanced" and state.done:
             break
@@ -2981,10 +3085,43 @@ async def topo_automap(zone: str) -> dict | None:
         sig = sonar_signature_from_summary(summary, angles)
         result = TOPO.observe(sonar_sig=sig, last_node_id=_last_topo_node, action="forward", now=time.time(), name=zone)
         set_last_topo_node(result["node_id"])
+        # If we relocalised onto a known, named place, update which room Pip thinks
+        # it's in -- this is how current_zone follows Pip room-to-room as it roams.
+        sync_current_zone_to_place(result["node_id"])
         save_topo()
         return result
     except Exception:
         return None
+
+
+def name_current_place(name: str) -> dict:
+    """Teach Pip the name of the room it's standing in: rename the current topo node
+    and snap current_zone. This is how the owner labels rooms ('this is the kitchen')
+    so Pip can later navigate room-to-room and tag what it sees by room. If no place
+    has been fingerprinted yet, set the zone label so the NEXT fingerprint anchors here."""
+    clean = re.sub(r"\s+", " ", str(name or "")).strip(" .?!").lower()
+    clean = re.sub(r"^(the|a|an|my|our)\s+", "", clean)[:40]
+    if not clean:
+        return {"ok": False, "reason": "no name given"}
+    node = TOPO.nodes.get(_last_topo_node) if _last_topo_node else None
+    if node is None:
+        pip_state["current_zone"] = clean
+        save_pip_runtime()
+        return {"ok": True, "named": clean, "node": None, "note": "no topo place anchored yet; set zone label (roam once and it'll fingerprint this room)"}
+    node.name = clean
+    pip_state["current_zone"] = clean
+    save_pip_runtime()
+    save_topo()
+    return {"ok": True, "named": clean, "node": node.id, "visits": node.visits}
+
+
+@app.post("/pip/place/name")
+async def pip_place_name(name: str, fingerprint: bool = True) -> dict:
+    """Name the room Pip is in. If it hasn't fingerprinted a place here yet and
+    fingerprint=true, take one quick scan to anchor a node, then name it."""
+    if fingerprint and not _last_topo_node and CONFIG.nav.topo_enabled:
+        await topo_automap(str(pip_state.get("current_zone") or name))
+    return name_current_place(name)
 
 
 @app.post("/tasks/little-being-loop")
@@ -3619,8 +3756,16 @@ async def pursue_goal(goal: Goal, *, allow_movement: bool) -> dict:
     if goal.kind == "return_to":
         result = {"kind": "return_to", "result": await return_to_task(label=goal.target or "charger", allow_movement=allow_movement, zone=str(pip_state.get("current_zone") or "office"))}
     elif goal.kind == "explore_zone":
+        # If the target is a known room elsewhere in the topo graph, navigate the
+        # route to it first (relocalising per place so drift can't compound), then
+        # explore once we arrive. Gated by cross-zone roaming.
+        navigated = None
+        if CONFIG.nav.cross_zone_roam_enabled and CONFIG.nav.topo_enabled and goal.target:
+            dest = TOPO.node_by_name(goal.target)
+            if dest and _last_topo_node and dest.id != _last_topo_node and pip_state.get("current_zone") != goal.target:
+                navigated = await return_home_task(goal=dest.id, allow_movement=allow_movement)
         loop = await little_being_loop(LittleBeingLoopCommand(zone=zone, allow_movement=allow_movement, duration_seconds=30, explore_cycles=6, capture_vision=True, compact=True, mood=autonomy.state.mood))
-        result = {"kind": "explore_zone", "result": loop.get("summary")}
+        result = {"kind": "explore_zone", "navigated": (navigated or {}).get("status"), "result": loop.get("summary")}
     elif goal.kind == "find_person":
         observe = await vision_awareness_task(VisionAwarenessCommand(zone=zone, capture=True, scan=True, compact=True, notes="goal: find person"))
         result = {"kind": "find_person", "result": {"scan_summary": observe.get("scan_summary"), "seen": _latest_person_pet()}}
@@ -3802,6 +3947,24 @@ def arbiter_context() -> dict:
     }
 
 
+def pick_roam_target_zone() -> str | None:
+    """Pick another learned room worth visiting now, by age-decayed sighting
+    interest. Returns None to stay in the current room (the common case). Only
+    active with room-to-room roaming on and ≥2 named places in the graph."""
+    if not (CONFIG.nav.cross_zone_roam_enabled and CONFIG.nav.topo_enabled):
+        return None
+    named = {n.name for n in TOPO.nodes.values() if n.name and not n.name.startswith("place-")}
+    current = pip_state.get("current_zone")
+    candidates = [z for z in named if z != current]
+    if not candidates:
+        return None
+    scores = explore.place_interest(store.list_spatial(200), now=time.time())
+    best = max(candidates, key=lambda z: scores.get(z, 0.0))
+    # Only bother crossing rooms if there's genuine pull over there; otherwise stay
+    # and roam the current room (kept calm so Pip isn't constantly room-hopping).
+    return best if scores.get(best, 0.0) > 0.25 else None
+
+
 async def arbiter_tick(*, allow_movement: bool = False) -> dict:
     """One top-level decision: pick a behavior and run it via a safe primitive."""
     started = time.time()
@@ -3823,16 +3986,27 @@ async def arbiter_tick(*, allow_movement: bool = False) -> dict:
     elif behavior == arbiter.BEHAVIOR_PATROL:
         zone = str(pip_state.get("current_zone") or "office")
         patrol_n = int(pip_state.get("patrol_count", 0) or 0)
+        # Memory-driven room hop: every 3rd loop, if another learned room looks more
+        # interesting (recent cat/person sightings), navigate the topo route there
+        # first (relocalising per place), then explore it. This is what turns roaming
+        # from aimless wandering into "drift back toward where life happens".
+        to_room = None
+        if move_ok and patrol_n % 3 == 0:
+            target_room = pick_roam_target_zone()
+            dest = TOPO.node_by_name(target_room) if target_room else None
+            if dest and dest.id != _last_topo_node:
+                await return_home_task(goal=dest.id, allow_movement=True)
+                to_room = target_room
+                zone = str(pip_state.get("current_zone") or zone)
         # Mostly free-roam via the well-tested reactive explore (frontier-directed
         # when mapping+VFH are on); every 3rd loop trace a wall when wall-following
-        # is enabled -- that's the "hugging walls" behaviour and the most reliable
-        # systematic room coverage we have without encoders/IMU.
+        # is enabled -- the "hugging walls" behaviour, our best systematic coverage.
         if move_ok and CONFIG.nav.wall_follow_enabled and patrol_n % 3 == 2:
             wf = await wall_follow_task(zone=zone, side="left", allow_movement=True, max_cycles=14, duration_seconds=30)
-            result = {"patrol": "wall_follow", "side": "left", "cycles": len(wf.get("plan", []))}
+            result = {"patrol": "wall_follow", "side": "left", "to_room": to_room, "cycles": len(wf.get("plan", []))}
         else:
             loop = await little_being_loop(LittleBeingLoopCommand(zone=zone, allow_movement=move_ok, duration_seconds=30, explore_cycles=4 + round(autonomy.state.curiosity * 4), capture_vision=True, compact=True, mood=autonomy.state.mood))
-            result = {"patrol": "explore", "summary": loop.get("summary")}
+            result = {"patrol": "explore", "to_room": to_room, "summary": loop.get("summary")}
         # The itch is scratched: reset boredom and pull curiosity just under baseline
         # so the urge has to rebuild over the next few minutes (the ebb and flow).
         pip_state["last_patrol_at"] = time.time()

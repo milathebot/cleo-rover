@@ -212,6 +212,12 @@ class NavConfig(BaseModel):
     use_vfh_steering: bool = False  # reactive-explore picks turns via VFH+ instead of widest-gap
     mapping_enabled: bool = False  # accumulate the persistent occupancy grid across moves
     wall_follow_enabled: bool = False  # allow the wall-follow task to drive
+    # Room-to-room roaming: when on, autonomous movement is NOT restricted to
+    # `approved_zones` -- Pip may wander through doorways into other rooms and the
+    # arbiter may navigate to any named place it has learned. Physical safety is the
+    # closed baby gate at the stairs + the downward cliff reflex (both authoritative);
+    # this only relaxes the soft zone-permission gate, never a reflex. OFF by default.
+    cross_zone_roam_enabled: bool = False
     flow_stall_enabled: bool = False  # consult camera optical flow to confirm stalls (needs cv2)
     topo_enabled: bool = True  # build/serve the topological place graph (no movement)
     consolidation_enabled: bool = True  # distill episodic memory into facts on heartbeat

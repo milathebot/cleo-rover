@@ -9,7 +9,37 @@ remembered landmark (e.g. the charger). All side-effect-free for easy testing.
 
 from __future__ import annotations
 
+import math
 from typing import Any
+
+# How much each kind of sighting makes a place worth revisiting. People/pets are
+# the draw; obstacles make a place mildly less appealing. Tuned, not sacred.
+_INTEREST_WEIGHTS = {
+    "vision_pet": 1.0,
+    "vision_person": 0.7,
+    "vision_object": 0.25,
+    "vision_area": 0.1,
+    "vision_obstacle": -0.2,
+}
+
+
+def place_interest(items: list[Any], *, now: float, half_life_s: float = 43200.0) -> dict[str, float]:
+    """Score each ZONE by how interesting it is to revisit, from age-decayed
+    sightings (recent cat/person sightings raise it). Pure; drives memory-aware
+    roaming so Pip drifts back toward where life happens instead of wandering blind.
+    half_life defaults to 12h so yesterday's cat still counts a little today."""
+    scores: dict[str, float] = {}
+    for item in items:
+        zone = getattr(item, "zone", None)
+        if not zone:
+            continue
+        weight = _INTEREST_WEIGHTS.get(getattr(item, "kind", "") or "", 0.0)
+        if weight == 0.0:
+            continue
+        last_seen = getattr(item, "last_seen_at", None)
+        age = max(0.0, now - float(last_seen)) if last_seen else 0.0
+        scores[zone] = scores.get(zone, 0.0) + weight * math.exp(-age / max(1.0, half_life_s))
+    return scores
 
 
 def decay_confidence(confidence: float, age_seconds: float | None, *, half_life_s: float = 1800.0) -> float:
