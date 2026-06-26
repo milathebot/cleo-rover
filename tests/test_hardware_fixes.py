@@ -61,3 +61,25 @@ def test_pan_trim_offsets_physical_pulse_only():
     cfg.turret.pan_trim_deg = 0.0              # no trim => identity
     body.set_turret(TurretCommand(pan_deg=0))
     assert captured[ch] == pan_pulse_us(0)
+
+
+def test_resolve_front_range_holds_through_dropouts():
+    # The forward reflex must reuse a recent good range through brief HC-SR04 dropouts
+    # under motor noise, and only fail CLOSED when blind longer than the hold window.
+    from rover.drivers import resolve_front_range
+
+    # valid read -> passes through, refreshes cache
+    r, blind, lg, at = resolve_front_range(120.0, None, 0.0, 10.0, 0.25)
+    assert r == 120.0 and blind is False and lg == 120.0 and at == 10.0
+
+    # transient None within hold window -> reuse last good, not blind
+    r, blind, lg, at = resolve_front_range(None, 120.0, 10.0, 10.1, 0.25)
+    assert r == 120.0 and blind is False
+
+    # None past the hold window -> blind / fail closed
+    r, blind, lg, at = resolve_front_range(None, 120.0, 10.0, 10.5, 0.25)
+    assert r is None and blind is True
+
+    # never had a good read -> blind
+    r, blind, lg, at = resolve_front_range(None, None, 0.0, 5.0, 0.25)
+    assert blind is True

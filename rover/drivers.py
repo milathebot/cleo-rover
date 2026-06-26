@@ -84,6 +84,30 @@ def should_cliff_stop(sensors: dict[str, Any], *, enabled: bool, drop_value: int
     return False, None
 
 
+def resolve_front_range(
+    fd: float | None,
+    last_good_cm: float | None,
+    last_good_at: float,
+    now: float,
+    hold_s: float,
+) -> tuple[float | None, bool, float | None, float]:
+    """Resolve the forward range for the reflex under HC-SR04 motor-noise dropouts.
+
+    Under driving, the ultrasonic intermittently returns garbage (dropped to None),
+    which must NOT instantly blind the reflex (else Pip stops on a clear path). A
+    valid read passes through and refreshes the cache; a None reuses the last good
+    read while it is younger than hold_s; only a None with a stale/absent cache fails
+    CLOSED (blind). Pure so the policy is unit-tested.
+
+    Returns (range_cm_or_None, fail_closed, new_last_good_cm, new_last_good_at).
+    """
+    if fd is not None:
+        return fd, False, float(fd), now
+    if last_good_cm is not None and (now - last_good_at) <= hold_s:
+        return last_good_cm, False, last_good_cm, last_good_at
+    return None, True, last_good_cm, last_good_at
+
+
 def should_bump_stop(sensors: dict[str, Any], *, enabled: bool) -> tuple[bool, str | None]:
     """Contact reflex from the front bump switches (value 1 == pressed)."""
     if not enabled:
@@ -137,6 +161,11 @@ class RoverBody:
         # which are common right after the turret moves, without a blind window).
         self._consecutive_none_range: int = 0
         self._max_none_range: int = 3
+        # Last valid forward range + when, so brief HC-SR04 dropouts under motor noise
+        # reuse a recent good reading instead of instantly blinding the reflex.
+        self._last_good_front_cm: float | None = None
+        self._last_good_front_at: float = 0.0
+        self._range_hold_s: float = 0.25
 
     def _reflex_threshold_cm(self) -> float:
         # Configurable hard emergency floor instead of the old hardcoded max(45,...)
@@ -207,25 +236,29 @@ class RoverBody:
             await self.stop()
             return True
         sensors = self._sensor_snapshot()
-        # Fail CLOSED on an unknown forward range: should_reflex_stop returns
-        # (False, None) when distance is None, which would otherwise let a forward
-        # pulse run blind. Tolerate brief dropouts, then stop.
-        if sensors.get("front_distance_cm") is None:
-            self._consecutive_none_range += 1
-            if self._consecutive_none_range >= self._max_none_range:
-                self.state.last_reflex_stop = {
-                    "reason": f"front range unknown for {self._consecutive_none_range} consecutive checks; failing closed",
-                    "kind": "range_unknown",
-                    "front_distance_cm": None,
-                    "threshold_cm": self._reflex_threshold_cm(),
-                    "drive": command.model_dump(),
-                    "source": source,
-                    "time": time.time(),
-                }
-                await self.stop()
-                return True
-        else:
-            self._consecutive_none_range = 0
+        # Resolve the forward range tolerantly: the HC-SR04 emits intermittent garbage
+        # (dropped to None) under motor noise, which must NOT instantly blind the reflex
+        # (else Pip stops dead on a clear path mid-drive). Reuse a recent good reading
+        # through brief dropouts; only fail CLOSED when blind longer than _range_hold_s.
+        now = time.time()
+        resolved, blind, self._last_good_front_cm, self._last_good_front_at = resolve_front_range(
+            sensors.get("front_distance_cm"), self._last_good_front_cm, self._last_good_front_at, now, self._range_hold_s
+        )
+        if blind:
+            blind_ms = (now - self._last_good_front_at) * 1000 if self._last_good_front_cm is not None else -1.0
+            self.state.last_reflex_stop = {
+                "reason": (f"front range blind for {blind_ms:.0f}ms (> {self._range_hold_s*1000:.0f}ms); failing closed"
+                           if blind_ms >= 0 else "front range never read; failing closed"),
+                "kind": "range_unknown",
+                "front_distance_cm": None,
+                "threshold_cm": self._reflex_threshold_cm(),
+                "drive": command.model_dump(),
+                "source": source,
+                "time": now,
+            }
+            await self.stop()
+            return True
+        sensors["front_distance_cm"] = resolved
         reflex, reason = should_reflex_stop(command, sensors, threshold_cm=self._reflex_threshold_cm())
         kind = "ultrasonic"
         if not reflex:
