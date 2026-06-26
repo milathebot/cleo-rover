@@ -106,3 +106,16 @@ def nearest_landmark(items: list[Any], *, label: str | None = None, kind: str | 
 def bearing_to_turn(bearing_deg: float, *, gain: float = 0.5, max_turn_deg: float = 25.0) -> float:
     """Convert a target bearing into a bounded open-loop turn toward it."""
     return max(-max_turn_deg, min(max_turn_deg, float(bearing_deg) * gain))
+
+
+def choose_frontier_bearing(frontiers: list[dict], *, max_abs_bearing: float = 120.0) -> float | None:
+    """Pick a frontier to head toward: the nearest one within a steerable bearing
+    window (frontiers come ranked nearest-first). Turns aimless patrol into directed
+    exploration of the unknown. Returns the relative bearing, or None if none fit."""
+    for frontier in frontiers:
+        bearing = frontier.get("bearing_deg")
+        if bearing is None:
+            continue
+        if abs(float(bearing)) <= float(max_abs_bearing):
+            return float(bearing)
+    return None

@@ -249,6 +249,14 @@ class NavConfig(BaseModel):
     wall_inside_corner_front_cm: float = Field(default=35.0, ge=10.0, le=120.0)
     wall_outside_corner_jump_cm: float = Field(default=40.0, ge=10.0, le=150.0)
 
+    # --- frontier-driven exploration + costmap inflation ---
+    # When mapping + VFH steering are on, patrol heads toward the nearest open
+    # frontier (edge of the unknown) instead of wandering. Obstacles are inflated by
+    # inflation_radius_cells so frontiers hugging a wall aren't chosen (clearance).
+    inflation_radius_cells: int = Field(default=1, ge=0, le=5)
+    frontier_min_cluster: int = Field(default=4, ge=1, le=50)
+    frontier_max_abs_bearing_deg: float = Field(default=120.0, ge=30.0, le=180.0)
+
     # --- topological place graph ---
     topo_sonar_thresh: float = Field(default=0.6, ge=0.1, le=1.0)
     topo_hist_thresh: float = Field(default=0.8, ge=0.1, le=1.0)
@@ -380,5 +388,14 @@ def load_config() -> RoverConfig:
             "Profile %s can arm motors (bench_safe_no_motors=false) but cliff_reflex_enabled=false: "
             "no stair/edge protection. Verify line_drop_value polarity on hardware, then enable it.",
             config.profile,
+        )
+    # Catch a hand-edited reflex floor so high it makes a normal ~80cm doorway
+    # impassable: Pip would silently refuse to approach (audit REL-5).
+    reflex_floor = max(float(config.safety.reflex_hard_cm), float(config.safety.front_stop_distance_cm))
+    if reflex_floor >= 70.0:
+        logging.getLogger("cleo_rover").warning(
+            "Reflex floor is %.0fcm (reflex_hard_cm/front_stop_distance_cm) -- that may make a "
+            "standard doorway impassable; Pip will refuse to approach. Lower it unless intentional.",
+            reflex_floor,
         )
     return config

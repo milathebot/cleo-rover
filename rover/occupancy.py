@@ -284,13 +284,31 @@ class OccupancyGrid:
                         break
         return out
 
-    def frontiers(self, *, min_cluster: int = 4) -> list[dict]:
+    def obstacle_cells(self) -> set[tuple[int, int]]:
+        """All currently-occupied cells (the costmap's hard obstacles)."""
+        n = self.config.size_cells
+        return {(col, row) for row in range(n) for col in range(n) if self.classify(col, row) == CELL_OCCUPIED}
+
+    def is_near_obstacle(self, col: int, row: int, radius_cells: int, obstacles: set[tuple[int, int]] | None = None) -> bool:
+        """Costmap inflation: True if (col,row) is within radius_cells of an obstacle.
+        Lets a planner keep robot-radius clearance instead of grazing walls."""
+        if radius_cells <= 0:
+            return self.classify(col, row) == CELL_OCCUPIED
+        obstacles = obstacles if obstacles is not None else self.obstacle_cells()
+        return any(abs(oc - col) <= radius_cells and abs(orow - row) <= radius_cells for oc, orow in obstacles)
+
+    def frontiers(self, *, min_cluster: int = 4, inflate_cells: int = 0) -> list[dict]:
         """Cluster frontier cells and return centroids as bearings/distances.
 
         Bearings are RELATIVE TO ROBOT heading (so a consumer can steer directly),
-        ranked nearest-first (least drift exposure per trip, per the research).
+        ranked nearest-first (least drift exposure per trip, per the research). With
+        inflate_cells>0, frontier cells hugging an obstacle (within that radius) are
+        dropped so Pip targets open frontiers it can actually reach with clearance.
         """
         cells = set(self.frontier_cells())
+        if inflate_cells > 0 and cells:
+            obstacles = self.obstacle_cells()
+            cells = {c for c in cells if not self.is_near_obstacle(c[0], c[1], inflate_cells, obstacles)}
         clusters: list[list[tuple[int, int]]] = []
         seen: set[tuple[int, int]] = set()
         for cell in cells:

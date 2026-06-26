@@ -71,6 +71,23 @@ class MotionModel:
         return self.turn_rate_deg_s(turn_duty) * moving_ms / 1000.0
 
 
+def calibrate_cm_s_per_duty(*, measured_cm: float, duty: float, duration_ms: float, duty_deadband: float = 0.08, dead_time_ms: float = 60.0) -> float:
+    """Invert distance_cm_for: from a measured tape distance for a known forward
+    pulse, solve the true cm_s_per_duty. The fix for the ~2x open-loop under-count
+    (no encoders) -- drive once, measure, persist."""
+    moving_ms = max(1.0, float(duration_ms) - float(dead_time_ms))
+    eff_duty = max(1e-6, abs(float(duty)) - float(duty_deadband))
+    return float(abs(measured_cm)) / (eff_duty * moving_ms / 1000.0)
+
+
+def calibrate_deg_s_per_turn_duty(*, measured_deg: float, turn_duty: float, duration_ms: float, turn_deadband: float = 0.10, dead_time_ms: float = 60.0) -> float:
+    """Invert degrees_for: from a measured rotation for a known turn pulse, solve
+    the true deg_s_per_turn_duty."""
+    moving_ms = max(1.0, float(duration_ms) - float(dead_time_ms))
+    eff_turn = max(1e-6, abs(float(turn_duty)) - float(turn_deadband))
+    return float(abs(measured_deg)) / (eff_turn * moving_ms / 1000.0)
+
+
 def motion_model_from(cfg) -> MotionModel:
     """Build a MotionModel from an OdometryConfig-shaped object (duck-typed)."""
     return MotionModel(

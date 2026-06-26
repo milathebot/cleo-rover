@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 import re
 import time
 import traceback
 from collections import deque
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Response
@@ -45,6 +47,8 @@ from . import degrade as degrade_mod
 from . import companion as companion_mod
 from . import sounds as sounds_mod
 from . import notify as notify_mod
+from . import longterm as longterm_mod
+from . import odometry as odometry_mod
 from .occupancy import OccupancyGrid, grid_config_from
 from .topo_map import TopoMap
 from . import topo_executor as topo_exec
@@ -71,6 +75,15 @@ MOTION = motion_model_from(CONFIG.odometry)
 body = RoverBody(mode=ROVER_MODE, config=CONFIG)
 events = EventStore()
 store = RoverStore(CONFIG.life_loop.data_path)
+# Restore any measured odometry calibration (the ~2x under-count fix) over the
+# config defaults, so a hardware calibration survives reboots without editing JSON.
+_odo_cal = store.load_json("odometry_calibration")
+if _odo_cal:
+    MOTION = dataclasses.replace(
+        MOTION,
+        cm_s_per_duty=float(_odo_cal.get("cm_s_per_duty", MOTION.cm_s_per_duty)),
+        deg_s_per_turn_duty=float(_odo_cal.get("deg_s_per_turn_duty", MOTION.deg_s_per_turn_duty)),
+    )
 autonomy = AutonomyEngine(CONFIG.life_loop, state=store.load_state(), cooldowns=store.load_cooldowns())
 movement_grant: dict | None = None
 pip_identity = {
@@ -107,6 +120,7 @@ DEFAULT_PIP_STATE = {
     "last_proactive_at": None,
     "last_cat_react_at": None,
     "last_digest_day": None,
+    "last_journal_day": None,
 }
 pip_state = {**DEFAULT_PIP_STATE, **(store.load_json("pip_state") or {})}
 pip_interrupts: list[dict] = list(store.load_json("pip_interrupts") or [])
@@ -258,7 +272,19 @@ def sonar_signature_from_summary(summary: dict, angles: list[float]) -> list[flo
         sig.append(match)
     return sig
 
-app = FastAPI(title="Cleo Rover Mk1 Body Service", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Modern replacement for the deprecated @app.on_event hooks. The bodies live in
+    # start_body_watchdog/stop_body_watchdog (defined below); names resolve at run
+    # time, so definition order doesn't matter.
+    await start_body_watchdog()
+    try:
+        yield
+    finally:
+        await stop_body_watchdog()
+
+
+app = FastAPI(title="Cleo Rover Mk1 Body Service", version="0.1.0", lifespan=lifespan)
 
 
 _heartbeat_task: asyncio.Task | None = None
@@ -311,7 +337,6 @@ def _start_rgb_expression() -> None:
     _rgb_task_handle = asyncio.create_task(loop())
 
 
-@app.on_event("startup")
 async def start_body_watchdog() -> None:
     body.start_safety_watchdog()
     _start_life_heartbeat()
@@ -319,7 +344,6 @@ async def start_body_watchdog() -> None:
     _start_rgb_expression()
 
 
-@app.on_event("shutdown")
 async def stop_body_watchdog() -> None:
     await body.stop_safety_watchdog()
     # Cancel ALL background loops (not just heartbeat/arbiter) so none outlive the
@@ -501,6 +525,7 @@ def life_heartbeat_step() -> dict:
     # Feed the sag-aware estimator (idle samples are trusted; in-motion advisory).
     update_battery(sensors_now)
     save_battery_state()  # persist EMA + debounce so a reboot can't reset the trip
+    maybe_roll_journal()  # once-a-day diary -> long-term memory journal
     maybe_send_daily_digest()  # once-per-evening "Pip's day" to the owner's phone
     if percent is not None:
         remember_event(RoverEvent(kind=RoverEventKind.battery, source="heartbeat", value=float(percent), payload={"percent": percent}))
@@ -1595,11 +1620,36 @@ def pip_public_state() -> dict:
     }
 
 
+def topo_place_names() -> list[str]:
+    """Human-friendly names of the places Pip knows (for memory/diary)."""
+    names: list[str] = []
+    try:
+        for node_id, node in getattr(TOPO, "nodes", {}).items():
+            names.append(str(getattr(node, "name", None) or node_id))
+    except Exception:
+        pass
+    return names
+
+
+def longterm_memory_snapshot() -> dict:
+    """The persisted layered memory fed to the LLM mind so Pip remembers across
+    sessions ('you showed me the kitchen yesterday'). Grounded in real state."""
+    spatial = [item.model_dump() for item in store.list_spatial(100)]
+    midnight = time.time() - (_now_minutes() * 60)
+    return longterm_mod.compose_longterm_memory(
+        facts=store.list_facts(20),
+        places=topo_place_names(),
+        spatial_items=spatial,
+        journal=store.load_json("diary_journal") or [],
+        cat_sightings_recent=len(recent_cat_sightings(50, since=midnight)),
+    )
+
+
 def pip_brain_snapshot(*, compact: bool = True) -> dict:
     sensors_now = body.sensors()
     # Kind-filtered fetch so the latest vision survives a flood of scan events.
     vision_events = store.recent_events(1, kind=RoverEventKind.vision_analysis.value)
-    return build_pip_brain(
+    brain = build_pip_brain(
         pip_state=pip_state,
         identity=pip_identity,
         battery=battery_safety_summary(sensors_now),
@@ -1613,6 +1663,12 @@ def pip_brain_snapshot(*, compact: bool = True) -> dict:
         latest_vision_event=vision_events[0] if vision_events else None,
         hazard_max_age_s=CONFIG.vision.hazard_max_age_s,
     )
+    # Layered long-term memory: the #1 thing that makes the mind feel continuous.
+    try:
+        brain["long_term_memory"] = longterm_memory_snapshot()
+    except Exception:
+        pass
+    return brain
 
 
 def pip_can_autonomously_move(*, allow_movement: bool, battery: dict) -> tuple[bool, str]:
@@ -1996,6 +2052,25 @@ def compose_daily_digest() -> str:
     return companion_mod.compose_digest(diary, cat_sightings=cats, places=len(TOPO.nodes), battery_percent=getattr(reading, "soc_percent", None))
 
 
+def maybe_roll_journal() -> None:
+    """Once per day, append the day's diary summary to the persisted journal that
+    feeds Pip's long-term memory (so the mind can recall recent days). Self-gating."""
+    local = time.localtime()
+    today = f"{local.tm_year}-{local.tm_yday}"
+    if pip_state.get("last_journal_day") == today:
+        return
+    pip_state["last_journal_day"] = today
+    try:
+        journal = store.load_json("diary_journal") or []
+        summary = (life_diary() or {}).get("summary", "")
+        if summary:
+            journal.append({"day": today, "summary": summary})
+            store.save_json("diary_journal", journal[-14:])
+    except Exception:
+        pass
+    save_pip_runtime()
+
+
 def maybe_send_daily_digest() -> None:
     """Once per evening, push Pip's 'day' to the owner's phone. Self-gating + best
     effort; called from the heartbeat."""
@@ -2021,6 +2096,53 @@ def pip_digest(send: bool = True) -> dict:
     text = compose_daily_digest()
     sent = notify_mod.notify_owner(text) if send else {"ok": False, "skipped": True}
     return {"ok": True, "digest": text, "sent": sent}
+
+
+@app.get("/calibrate/odometry")
+def calibrate_odometry_status() -> dict:
+    """Show the live motion-model coefficients + any stored calibration, and how to
+    measure new ones (fixes the ~2x open-loop distance under-count)."""
+    return {
+        "ok": True,
+        "live": {
+            "cm_s_per_duty": MOTION.cm_s_per_duty,
+            "deg_s_per_turn_duty": MOTION.deg_s_per_turn_duty,
+            "duty_deadband": MOTION.duty_deadband,
+            "turn_deadband": MOTION.turn_deadband,
+            "dead_time_ms": MOTION.dead_time_ms,
+        },
+        "stored": store.load_json("odometry_calibration"),
+        "how_to": "Drive one known pulse (e.g. /drive linear=0.4 for 1500ms), tape-measure how far/which angle it went, then POST /calibrate/odometry?linear_cm=&linear_duty=&linear_ms= (and/or turn_deg=&turn_duty=&turn_ms=).",
+    }
+
+
+@app.post("/calibrate/odometry")
+def calibrate_odometry(
+    linear_cm: float | None = None,
+    linear_duty: float | None = None,
+    linear_ms: float | None = None,
+    turn_deg: float | None = None,
+    turn_duty: float | None = None,
+    turn_ms: float | None = None,
+) -> dict:
+    """Calibrate odometry from a measured run: pass the tape-measured distance for a
+    known forward pulse and/or the measured angle for a known turn pulse. Solves and
+    persists the corrected coefficients and applies them live (no JSON editing)."""
+    global MOTION
+    cm_s = MOTION.cm_s_per_duty
+    deg_s = MOTION.deg_s_per_turn_duty
+    applied: dict[str, float] = {}
+    if linear_cm and linear_duty and linear_ms:
+        cm_s = round(odometry_mod.calibrate_cm_s_per_duty(measured_cm=linear_cm, duty=linear_duty, duration_ms=linear_ms, duty_deadband=MOTION.duty_deadband, dead_time_ms=MOTION.dead_time_ms), 2)
+        applied["cm_s_per_duty"] = cm_s
+    if turn_deg and turn_duty and turn_ms:
+        deg_s = round(odometry_mod.calibrate_deg_s_per_turn_duty(measured_deg=turn_deg, turn_duty=turn_duty, duration_ms=turn_ms, turn_deadband=MOTION.turn_deadband, dead_time_ms=MOTION.dead_time_ms), 2)
+        applied["deg_s_per_turn_duty"] = deg_s
+    if not applied:
+        return {"ok": False, "reason": "provide linear_cm+linear_duty+linear_ms and/or turn_deg+turn_duty+turn_ms (the measured distance/angle for a known pulse)"}
+    MOTION = dataclasses.replace(MOTION, cm_s_per_duty=cm_s, deg_s_per_turn_duty=deg_s)
+    store.save_json("odometry_calibration", {"cm_s_per_duty": cm_s, "deg_s_per_turn_duty": deg_s})
+    return {"ok": True, "applied": applied, "live": {"cm_s_per_duty": MOTION.cm_s_per_duty, "deg_s_per_turn_duty": MOTION.deg_s_per_turn_duty}, "persisted": True}
 
 
 @app.get("/supervisor/status")
@@ -2163,19 +2285,51 @@ def vfh_turn_deg(result, *, blocked_streak: int = 0) -> float:
     return max(-32.0, min(32.0, deg))
 
 
+def frontier_goal_bearing() -> float | None:
+    """If mapping is accumulating, the nearest reachable frontier bearing (edge of
+    the unknown) to steer toward -- turns aimless patrol into directed exploration.
+    None when mapping is off or there's no good frontier."""
+    if not CONFIG.nav.mapping_enabled:
+        return None
+    try:
+        frontiers = NAV_GRID.frontiers(min_cluster=CONFIG.nav.frontier_min_cluster, inflate_cells=CONFIG.nav.inflation_radius_cells)
+        return explore.choose_frontier_bearing(frontiers, max_abs_bearing=CONFIG.nav.frontier_max_abs_bearing_deg)
+    except Exception:
+        return None
+
+
 async def reactive_choose_turn(summary: dict, *, blocked_streak: int = 0) -> dict:
     """Pick a recovery/steering turn. Uses VFH+ when nav.use_vfh_steering is on,
-    else the legacy widest-gap heuristic. Same return contract either way."""
+    else the legacy widest-gap heuristic. Same return contract either way. When the
+    occupancy grid is mapping, VFH steers toward the nearest open frontier instead
+    of straight ahead (frontier-driven exploration)."""
     if not CONFIG.nav.use_vfh_steering:
         return await reactive_turn_toward(summary.get("best"), blocked_streak=blocked_streak)
-    result = vfh_mod.steer(sweep_samples_from_summary(summary), cfg=VFH_CFG, target_bearing_deg=0.0)
+    goal_bearing = frontier_goal_bearing() or 0.0
+    result = vfh_mod.steer(sweep_samples_from_summary(summary), cfg=VFH_CFG, target_bearing_deg=goal_bearing)
     deg = vfh_turn_deg(result, blocked_streak=blocked_streak)
-    vfh_detail = {"chosen_bearing_deg": result.chosen_bearing_deg, "blocked": result.blocked, "free_runs": result.free_runs, "reason": result.reason}
+    vfh_detail = {"chosen_bearing_deg": result.chosen_bearing_deg, "goal_bearing_deg": goal_bearing, "blocked": result.blocked, "free_runs": result.free_runs, "reason": result.reason}
     if abs(deg) < 1.0:
         return {"ok": True, "skipped": True, "reason": "vfh: gap already centered", "deg": deg, "vfh": vfh_detail}
     turn = await rotate_step(RotateStepCommand(deg=deg, require_permission=True))
     turn["vfh"] = vfh_detail
     return turn
+
+
+@app.get("/nav/frontier")
+def nav_frontier() -> dict:
+    """The live occupancy-grid frontiers (edges of the unknown), inflation-filtered,
+    plus the bearing patrol would head toward. Read-only; needs nav.mapping_enabled
+    to have accumulated a grid to be meaningful."""
+    frontiers = NAV_GRID.frontiers(min_cluster=CONFIG.nav.frontier_min_cluster, inflate_cells=CONFIG.nav.inflation_radius_cells)
+    return {
+        "ok": True,
+        "frontiers": frontiers,
+        "chosen_bearing_deg": explore.choose_frontier_bearing(frontiers, max_abs_bearing=CONFIG.nav.frontier_max_abs_bearing_deg),
+        "inflation_radius_cells": CONFIG.nav.inflation_radius_cells,
+        "mapping_enabled": CONFIG.nav.mapping_enabled,
+        "grid": NAV_GRID.stats(),
+    }
 
 
 @app.post("/nav/plan")
@@ -3548,6 +3702,7 @@ def arbiter_context() -> dict:
         "energy": feelings["energy"],
         "curiosity": feelings["curiosity"],
         "boredom": feelings["boredom"],
+        "mood": feelings.get("mood") or autonomy.state.mood,
         "has_goal": active_goal() is not None,
         "person_present": info["person"] or info["pet"],
         "pet_present": info["pet"],

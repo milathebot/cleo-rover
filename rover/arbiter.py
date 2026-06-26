@@ -102,11 +102,21 @@ def arbitrate(ctx: dict) -> dict:
 
     # Curiosity/boredom drive exploration when movement is allowed -- but never
     # wander while parked at a marked no-go (top of the stairs): just observe.
+    # Mood is causal here (not decorative): a tired/wary mood raises the bar to
+    # roam (more cautious), an eager mood lowers it. So after a string of bumps
+    # (which the autonomy engine turns into an "alert"/low-confidence mood) Pip
+    # naturally settles and observes instead of charging around.
+    mood = str(ctx.get("mood") or "").lower()
+    patrol_threshold = 0.68
+    if mood in {"tired", "low_power", "sad", "alert", "lonely"}:
+        patrol_threshold = 0.82
+    elif mood in {"curious", "playful", "excited", "seeking"}:
+        patrol_threshold = 0.55
     if (
         ctx.get("movement_allowed")
         and not ctx.get("at_hazard")
-        and (float(ctx.get("curiosity", 0.0) or 0.0) >= 0.68 or float(ctx.get("boredom", 0.0) or 0.0) >= 0.6)
+        and (float(ctx.get("curiosity", 0.0) or 0.0) >= patrol_threshold or float(ctx.get("boredom", 0.0) or 0.0) >= 0.6)
     ):
-        return out(BEHAVIOR_PATROL, "curious/bored and free to move; patrolling")
+        return out(BEHAVIOR_PATROL, f"curious/bored ({mood or 'neutral'}) and free to move; patrolling")
 
     return out(BEHAVIOR_OBSERVE, "calm presence; observing")

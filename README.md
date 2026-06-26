@@ -382,6 +382,26 @@ Personality + safety features for living around the house (a family + cats):
 - **Daily digest to your phone.** Each evening Pip pushes a "Pip's day" summary to
   Telegram (`rover/notify.py`); build it on demand with `POST /pip/digest`.
 
+### Aliveness & navigation upgrades
+
+- **Long-term memory (`rover/longterm.py`).** A persisted, rolling summary of the
+  places Pip knows, the facts it has consolidated, the people/pets it has met, and a
+  daily diary journal — injected into the LLM mind's brain packet as
+  `long_term_memory` so Pip stays continuous across sessions ("you showed me the
+  kitchen yesterday") instead of forgetting every call.
+- **Odometry calibration tool.** No encoders means distance is an open-loop guess
+  (it under-counts ~2×). Drive one known pulse, tape-measure it, then
+  `POST /calibrate/odometry?linear_cm=&linear_duty=&linear_ms=` (and/or the turn
+  variant) — it solves and **persists** the corrected coefficients and applies them
+  live (no JSON editing). `GET /calibrate/odometry` shows the current values.
+- **Frontier-driven roaming + costmap inflation.** With mapping + VFH steering on,
+  patrol heads toward the nearest open **frontier** (edge of the unknown) instead of
+  wandering, and obstacles are inflated by `nav.inflation_radius_cells` so it keeps
+  clearance. `GET /nav/frontier` shows the live frontiers + chosen bearing.
+- **Causal mood.** Mood now changes behavior, not just the LED: a tired/wary mood
+  raises the bar to roam (Pip settles and observes — e.g. after a string of bumps),
+  an eager mood lowers it.
+
 ## Hardware status
 
 Current verified bench state:
