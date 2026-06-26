@@ -62,9 +62,9 @@ def arbitrate(ctx: dict) -> dict:
     if mode == "sleep" or ctx.get("awake") is False:
         return out(BEHAVIOR_REST, "asleep / sleep mode")
 
-    # Physical edge/stairs is the most urgent state: a downward-drop reflex fired
-    # (or we're sitting at a known no-go). Never self-move; hold and ask out loud
-    # to be carried. Above battery so Pip never drives toward the stairs to charge.
+    # Physical edge/stairs is the most urgent state: a downward-drop reflex fired.
+    # Never self-move; hold and ask out loud to be carried. Above battery so Pip
+    # never drives toward the stairs to charge.
     if ctx.get("edge_detected"):
         return out(BEHAVIOR_REQUEST_ASSIST, "edge/drop detected — holding and asking to be carried")
 
@@ -100,12 +100,11 @@ def arbitrate(ctx: dict) -> dict:
     if ctx.get("has_goal"):
         return out(BEHAVIOR_PURSUE_GOAL, "pursuing active goal")
 
-    # Curiosity/boredom drive exploration when movement is allowed -- but never
-    # wander while parked at a marked no-go (top of the stairs): just observe.
-    # Mood is causal here (not decorative): a tired/wary mood raises the bar to
-    # roam (more cautious), an eager mood lowers it. So after a string of bumps
-    # (which the autonomy engine turns into an "alert"/low-confidence mood) Pip
-    # naturally settles and observes instead of charging around.
+    # Curiosity/boredom drive exploration when movement is allowed. Mood is causal
+    # here (not decorative): a tired/wary mood raises the bar to roam (more
+    # cautious), an eager mood lowers it. So after a string of bumps (which the
+    # autonomy engine turns into an "alert"/low-confidence mood) Pip naturally
+    # settles and observes instead of charging around.
     mood = str(ctx.get("mood") or "").lower()
     patrol_threshold = 0.68
     if mood in {"tired", "low_power", "sad", "alert", "lonely"}:
@@ -114,7 +113,6 @@ def arbitrate(ctx: dict) -> dict:
         patrol_threshold = 0.55
     if (
         ctx.get("movement_allowed")
-        and not ctx.get("at_hazard")
         and (float(ctx.get("curiosity", 0.0) or 0.0) >= patrol_threshold or float(ctx.get("boredom", 0.0) or 0.0) >= 0.6)
     ):
         return out(BEHAVIOR_PATROL, f"curious/bored ({mood or 'neutral'}) and free to move; patrolling")

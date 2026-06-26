@@ -1,5 +1,5 @@
-"""Tests for the household-companion features: stairs safety (ask-to-be-carried +
-no-go zones), cat mode, proactive personality content + chirps, and the voice
+"""Tests for the household-companion features: stairs safety (cliff-reflex
+ask-to-be-carried), cat mode, proactive personality content + chirps, and the voice
 mini-interactions + daily digest. Pure content/logic here; speech/RGB/Telegram are
 side effects exercised only for graceful behavior."""
 
@@ -49,13 +49,6 @@ def test_compose_digest_includes_real_signals():
     assert "77%" in digest
 
 
-def test_is_hazard_place_case_insensitive():
-    assert companion.is_hazard_place("Stairs", ["stairs"]) is True
-    assert companion.is_hazard_place("office", ["stairs"]) is False
-    assert companion.is_hazard_place(None, ["stairs"]) is False
-    assert companion.is_hazard_place("stairs", []) is False
-
-
 def test_chirp_patterns_known_and_fallback():
     assert sounds.chirp_pattern("happy") == sounds.CHIRPS["happy"]
     assert sounds.chirp_pattern("totally-unknown") == sounds.CHIRPS[sounds.DEFAULT_EMOTION]
@@ -78,12 +71,6 @@ def test_edge_detected_requests_assist_over_everything_else():
     assert d["behavior"] == arbiter.BEHAVIOR_REQUEST_ASSIST
 
 
-def test_at_hazard_suppresses_patrol():
-    base = {"movement_allowed": True, "curiosity": 0.95}
-    assert arbiter.arbitrate(base)["behavior"] == arbiter.BEHAVIOR_PATROL
-    assert arbiter.arbitrate({**base, "at_hazard": True})["behavior"] == arbiter.BEHAVIOR_OBSERVE
-
-
 # --- service wiring -----------------------------------------------------------
 
 
@@ -97,13 +84,6 @@ def test_voice_mini_interactions_are_handled():
         data = client.post("/pip/command", json={"text": text, "source": "test"}).json()
         assert data["handled"] is True, text
         assert data["action"] == action, text
-
-
-def test_hazard_zone_roundtrip():
-    client.delete("/hazard/clear")
-    assert client.post("/hazard/mark?name=stairs").json()["hazard_zones"] == ["stairs"]
-    assert "stairs" in client.get("/hazard/zones").json()["hazard_zones"]
-    assert client.delete("/hazard/clear?name=stairs").json()["hazard_zones"] == []
 
 
 def test_daily_digest_builds_without_sending():

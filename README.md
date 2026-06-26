@@ -361,15 +361,15 @@ Autonomy can request tiny movement, but the body refuses real movement unless mo
 
 Personality + safety features for living around the house (a family + cats):
 
-- **Stairs / no-go zones.** Mark a place Pip must never autonomously enter
-  (`POST /hazard/mark?name=stairs` — teach it once at the stair landing). The
-  arbiter never patrols into a no-go zone, and when the downward-IR **cliff reflex
-  trips** Pip *holds and asks out loud to be carried* (`request_assist` behavior:
-  speech + alert chirp + a Telegram ping to the owner), instead of stopping
-  silently. **⚠ Safety:** the cliff reflex needs all three IR sensors to read a
-  drop — an angled approach or a glitching sensor can still go over. Treat this as
-  defense-in-depth and keep a **physical barrier at the top of the stairs** until a
-  dedicated downward laser ToF is added and supervised-tested.
+- **Stairs safety.** When the downward-IR **cliff reflex trips**, Pip *holds and
+  asks out loud to be carried* (`request_assist` behavior: speech + alert chirp + a
+  Telegram ping) instead of stopping silently. **⚠ Safety:** the cliff reflex needs
+  all three IR sensors to read a drop — an angled approach or a glitching sensor can
+  still go over, so it is **only defense-in-depth**. Keep a **physical baby gate
+  closed at the top of the stairs**; that is the real safeguard until a dedicated
+  downward laser ToF is added and supervised-tested. (A map-based "no-go zone" was
+  prototyped and removed — with no encoders/IMU/LiDAR, place recognition is too
+  unreliable to trust near a staircase.)
 - **Cat mode 🐱.** When the vision detector sees a cat (not a person), Pip gives a
   gentle, rate-limited reaction + soft chirp and *keeps its distance* (never chases
   — `cat_respect` is 0.95). Sightings are logged and surface in the diary + digest.

@@ -111,11 +111,3 @@ def compose_digest(diary: dict[str, Any], *, cat_sightings: int = 0, places: int
     if battery_percent is not None:
         lines.append(f"🔋 Battery: {round(float(battery_percent))}%.")
     return "\n".join(lines)
-
-
-def is_hazard_place(node: str | None, hazard_zones: list[str] | set[str] | None) -> bool:
-    """True if the current place is a marked no-go (e.g. the top of the stairs)."""
-    if not node or not hazard_zones:
-        return False
-    node_l = str(node).lower()
-    return any(node_l == str(z).lower() for z in hazard_zones)

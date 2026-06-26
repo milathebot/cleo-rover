@@ -113,9 +113,8 @@ DEFAULT_PIP_STATE = {
     "last_life_tick_at": None,
     "boredom": 0.35,
     "mood": "curious",
-    # Household-companion state (persisted): no-go zones (e.g. top of stairs) and
-    # proactive/assist/cat/digest cooldown stamps (cat counts come from the event log).
-    "hazard_zones": [],
+    # Household-companion state (persisted): proactive/assist/cat/digest cooldown
+    # stamps (cat counts come from the event log).
     "last_carry_request_at": None,
     "last_proactive_at": None,
     "last_cat_react_at": None,
@@ -2011,38 +2010,6 @@ async def pip_command(command: PipCommand) -> dict:
     }
 
 
-@app.post("/hazard/mark")
-def hazard_mark(name: str | None = None) -> dict:
-    """Mark a place as a no-go zone Pip must never autonomously enter (e.g. the top
-    of the stairs). Defaults to the current place. Persisted across reboots. Teach
-    it once: drive Pip to the stair landing, /topo/observe?name=stairs, then this."""
-    zone = (name or _last_topo_node or "").strip().lower()
-    if not zone:
-        return {"ok": False, "reason": "no name given and current place is unknown; pass ?name=stairs"}
-    zones = [str(z).lower() for z in (pip_state.get("hazard_zones") or [])]
-    if zone not in zones:
-        zones.append(zone)
-        pip_state["hazard_zones"] = zones
-        save_pip_runtime()
-    return {"ok": True, "hazard_zones": pip_state["hazard_zones"]}
-
-
-@app.get("/hazard/zones")
-def hazard_zones() -> dict:
-    return {"ok": True, "hazard_zones": pip_state.get("hazard_zones", [])}
-
-
-@app.delete("/hazard/clear")
-def hazard_clear(name: str | None = None) -> dict:
-    if name:
-        zones = [z for z in (pip_state.get("hazard_zones") or []) if str(z).lower() != name.strip().lower()]
-    else:
-        zones = []
-    pip_state["hazard_zones"] = zones
-    save_pip_runtime()
-    return {"ok": True, "hazard_zones": zones}
-
-
 def compose_daily_digest() -> str:
     """A friendly end-of-day summary for the owner's phone, grounded in real state."""
     diary = life_diary()
@@ -3692,7 +3659,6 @@ def arbiter_context() -> dict:
     # Edge/stairs: a recent downward-IR cliff reflex means hold + ask to be carried.
     rs = body.state.last_reflex_stop
     edge_detected = bool(rs and rs.get("kind") == "cliff" and (time.time() - float(rs.get("time") or 0.0)) < 25.0)
-    at_hazard = companion_mod.is_hazard_place(_last_topo_node, pip_state.get("hazard_zones"))
     return {
         "mode": pip_state.get("mode"),
         "awake": pip_state.get("awake"),
@@ -3707,7 +3673,6 @@ def arbiter_context() -> dict:
         "person_present": info["person"] or info["pet"],
         "pet_present": info["pet"],
         "edge_detected": edge_detected,
-        "at_hazard": at_hazard,
         "hazards_present": hazards_present,
         "quiet": quiet,
         "do_not_disturb": autonomy.state.do_not_disturb,
