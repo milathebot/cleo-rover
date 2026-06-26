@@ -72,9 +72,9 @@
     "speaker_amp": "max98357a-i2s"
   },
   "nav": {
-    "use_vfh_steering": false,
-    "mapping_enabled": false,
-    "wall_follow_enabled": false,
+    "use_vfh_steering": true,
+    "mapping_enabled": true,
+    "wall_follow_enabled": true,
     "flow_stall_enabled": false,
     "topo_enabled": true,
     "consolidation_enabled": true
