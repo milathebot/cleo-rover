@@ -236,8 +236,8 @@ button.dis{opacity:.32; pointer-events:none; filter:grayscale(.7)}
     <div>
       <div class='panel'>
         <h2><span class='mk'>//</span> Talk to Pip</h2>
-        <div class='cmd'><input id='cmdin' placeholder='say something… e.g. "status", "patrol", "come here"' onkeydown='if(event.key=="Enter")cmd()'/><button onclick='cmd()'>Send</button></div>
-        <div class='cmdresp' id='cmdresp'>routes through /pip/command · talking never moves Pip</div>
+        <div class='cmd'><input id='cmdin' placeholder='type: say Good evening!  (Pip speaks it exactly)' onkeydown='if(event.key=="Enter")cmd()'/><button onclick='cmd()'>Send</button><button onclick='sayHi()'>👋 Hi</button></div>
+        <div class='cmdresp' id='cmdresp'>"say &lt;text&gt;" → Pip speaks it · other text → /pip/command · talking never moves Pip</div>
       </div>
       <div class='panel'>
         <h2><span class='mk'>//</span> Interrupts</h2>
@@ -374,7 +374,12 @@ async function slow(){
     $('safelog').innerHTML=evs.length?evs.map(x=>{ const hot=(x.kind==='obstacle'||x.kind==='bump'); return `<div class='s'><span class='k ${hot?'hot':''}'>${x.kind}</span><span style='color:#bcd;flex:1'>${esc(x.label||x.source||'')}</span><span style='color:var(--dim)'>${ago(x.timestamp)}</span></div>`; }).join(''):"<div class='s' style='color:var(--dim)'>no safety events logged</div>"; }catch(e){}
 }
 function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-async function cmd(){ const el=$('cmdin'); const t=(el.value||'').trim(); if(!t) return; $('cmdresp').textContent='…'; try{ const r=await j('/pip/command',{method:'POST',body:JSON.stringify({text:t,source:'console',allow_movement:false})}); const say=r.say||r.reply||r.speech||r.note||''; $('cmdresp').innerHTML=`<b>${r.action||(r.handled?'ok':'?')}</b> ${esc(String(say).slice(0,240))}`; el.value=''; }catch(e){ $('cmdresp').textContent='command failed'; } slow(); }
+async function cmd(){ const el=$('cmdin'); const t=(el.value||'').trim(); if(!t) return; $('cmdresp').textContent='…';
+  try{
+    if(/^say\s+/i.test(t)){ const phrase=t.replace(/^say\s+/i,''); await j('/speech/say?text='+encodeURIComponent(phrase),{method:'POST'}); $('cmdresp').innerHTML='<b>spoke</b> '+esc(phrase.slice(0,200)); el.value=''; return; }
+    const r=await j('/pip/command',{method:'POST',body:JSON.stringify({text:t,source:'console',allow_movement:false})}); const say=r.say||r.reply||r.speech||r.note||''; $('cmdresp').innerHTML=`<b>${r.action||(r.handled?'ok':'?')}</b> ${esc(String(say).slice(0,240))}`; el.value='';
+  }catch(e){ $('cmdresp').textContent='command failed'; } slow(); }
+async function sayHi(){ $('cmdresp').textContent='…'; try{ await j('/speech/say?text='+encodeURIComponent('Good evening! Pip rolled all the way down the hall to say hello.'),{method:'POST'}); $('cmdresp').innerHTML='<b>spoke</b> hello 👋'; }catch(e){ $('cmdresp').textContent='say failed'; } }
 function tickClock(){ $('clock').textContent=new Date().toLocaleTimeString(); }
 async function live(on){ try{await j('/pip/live?on='+on,{method:'POST'});}catch(e){} fast(); }
 async function tick(){ try{await j('/pip/arbiter/tick?allow_movement=false',{method:'POST'});}catch(e){} fast(); }
